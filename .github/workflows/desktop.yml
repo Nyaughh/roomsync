@@ -1,0 +1,36 @@
+name: Native desktop verification
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - run: cargo fmt --manifest-path adapters/transport/Cargo.toml --check
+      - run: cargo fmt --manifest-path adapters/windows/Cargo.toml --check
+      - run: cargo fmt --manifest-path apps/desktop/Cargo.toml --check
+      - run: cargo clippy --manifest-path adapters/transport/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo clippy --manifest-path adapters/windows/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path adapters/transport/Cargo.toml --all-targets --locked
+      - run: cargo test --manifest-path adapters/windows/Cargo.toml --all-targets --locked
+      - run: cargo test --manifest-path apps/desktop/Cargo.toml --all-targets --locked
+      - run: cargo build --manifest-path apps/desktop/Cargo.toml --release --locked
+
+  android-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - run: cargo fmt --manifest-path apps/android/native/Cargo.toml --check
+      - run: cargo clippy --manifest-path apps/android/native/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path apps/android/native/Cargo.toml --all-targets --locked

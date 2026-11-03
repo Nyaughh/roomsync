@@ -1,0 +1,20 @@
+[package]
+name = "roomsync-windows"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Bounded, timestamped Windows WASAPI loopback and render adapter for RoomSync"
+
+# Deliberately independent of the dependency-free core workspace.
+[workspace]
+
+[dependencies]
+crossbeam-queue = "0.3.12"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "=0.26.0"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_Com"] }
+
+[[example]]
+name = "audio_probe"
+path = "examples/audio_probe.rs"

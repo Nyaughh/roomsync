@@ -1,0 +1,5 @@
+/build/
+/native/target/
+/local.properties
+*.keystore
+*.jks

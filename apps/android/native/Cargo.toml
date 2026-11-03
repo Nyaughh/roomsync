@@ -1,0 +1,25 @@
+[package]
+name = "roomsync-android"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+roomsync-core = { path = "../../.." }
+roomsync-transport = { path = "../../../adapters/transport" }
+jni = "0.21.1"
+libc = "0.2"
+zeroize = "1.8"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[lints.clippy]
+all = "warn"

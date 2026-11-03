@@ -1,0 +1,23 @@
+[package]
+name = "roomsync-transport"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Authenticated bounded RoomSync UDP transport"
+
+[dependencies]
+roomsync-core = { path = "../.." }
+snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-curve25519", "use-sha2", "use-getrandom"] }
+getrandom = "0.3"
+zeroize = "1.8"
+
+[[bin]]
+name = "roomsync-net"
+path = "src/bin/roomsync-net.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

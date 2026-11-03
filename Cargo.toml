@@ -1,0 +1,27 @@
+[package]
+name = "roomsync-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Bounded native clock synchronization and PCM playout prototype"
+publish = false
+
+[lib]
+name = "roomsync_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "roomsync"
+path = "src/bin/roomsync.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
