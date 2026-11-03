@@ -1,4 +1,4 @@
-# RoomSync Windows desktop preview 0.1.1
+# RoomSync Windows desktop preview 0.1.2
 
 A native Windows audio host with a small local browser control page. The browser
 handles setup and status only; capture, encryption and audio timing remain native
@@ -7,8 +7,8 @@ validation.** This unsigned preview is not a finished consumer release.
 
 ## Windows → Android: simpler setup
 
-Update **both** apps to 0.1.1. The new authenticated pairing flow is not compatible
-with the old timed-pairing UI.
+Update **both** apps to 0.1.2. The new authenticated pairing flow is not compatible
+with earlier receivers that do not report their output timing budget.
 
 1. Extract the Windows ZIP. Open `Start-RoomSync.cmd`; keep its console open. It
    opens controls on this computer at a random `127.0.0.1` port. If a browser does
@@ -27,8 +27,11 @@ with the old timed-pairing UI.
    There is **no ten-second deadline**. Windows learns the phone's IP/port only
    after authenticated pairing. Stop cancels waiting. Already-paired phones stay
    connected while the rest of the configured group joins.
-6. After all phones pair, Windows confirms one shared timeline and allows a
-   five-second clock warmup. Play ordinary unprotected music. Windows' original
+6. After all phones pair, each measures its output queue while playing silence.
+   Windows automatically chooses one shared lead that covers the slowest queue,
+   a full output batch, Windows capture buffering and a 30 ms network/clock reserve.
+   It then confirms the timeline and allows a five-second clock warmup. Play
+   ordinary unprotected music. Windows' original
    output is not muted or delayed, so keep it inaudible, for example with headphones,
    to avoid echo relative to the phones.
 7. **Stop** closes the audio stream and UDP listeners. Start listening again uses
@@ -50,7 +53,17 @@ The page distinguishes:
 - Setup code verified, awaiting encrypted confirmation: traffic reached both ends,
   but the final handshake has not completed.
 - Incompatible pairing version: update both apps.
-- Authenticated and waiting for the group / shared timeline confirmed.
+- Authenticated, calibrating output queues, then shared timeline confirmed.
+- Streaming metrics: selected common lead, capture allowance, peak level of
+  captured/encoded PCM and capture-block age. Peaks are digital samples, not
+  speaker volume or proof that sound reached a physical output.
+
+The preferred lead in Audio options is a minimum, not a way to override a slower
+receiver. Automatic lead is capped at 300 ms to stay within the fixed 320 ms
+packet window. A device needing more reports an explicit unsupported-output
+error rather than staying connected and silently dropping every sample. Output
+queues that change after calibration require reconnection. These are timestamp
+and buffering estimates, not acoustic latency measurements.
 
 A generic timeout cannot by itself prove a firewall, Wi-Fi or key problem. The new
 flow keeps waiting until Stop and reports observed packet/authentication counts.
@@ -86,7 +99,8 @@ No arguments on Windows and the old `wizard` command both open the new controls.
 Explicit legacy `host --key ... --bind ... --peer ...` and `receive --key ...`
 commands remain for developer tests; use the control page and updated Android app
 for cancellable, automatic-address pairing. The old fixed-peer command does not
-provide the new no-deadline discovery UI.
+provide the new no-deadline discovery UI or automatic output-budget negotiation.
+Do not use those legacy commands to diagnose the updated Android path.
 
 Build/test:
 

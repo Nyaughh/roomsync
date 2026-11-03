@@ -6,3 +6,4 @@
 /deps/*.jar
 /deps/*.jar.sha1
 /deps/*.download
+/tests/live_fixture/target/

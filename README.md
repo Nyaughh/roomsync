@@ -7,7 +7,7 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
-Update both the Windows host and Android receiver to **0.1.1**.
+Update both the Windows host and Android receiver to **0.1.2**.
 
 - Extract the Windows ZIP and open `Start-RoomSync.cmd`. It opens local controls.
   Windows automatically lists its LAN addresses; no phone IP needs typing.
@@ -16,7 +16,8 @@ Update both the Windows host and Android receiver to **0.1.1**.
 - Start listening and connect Android in either order. Pairing waits until Stop,
   with packet/authentication diagnostics rather than a ten-second click deadline.
   Windows learns the phone's source address only after authenticated pairing.
-- All configured receivers confirm one shared timeline before a five-second warmup.
+- Receivers first calibrate their output queues. Windows automatically budgets
+  one common lead for the whole group before a five-second warmup.
   Windows' original speaker remains undelayed: keep it inaudible to avoid echo.
 - Use a trusted LAN without client isolation. No firewall/interface settings are
   changed automatically. Never publish the setup code or expose UDP ports online.
@@ -59,6 +60,9 @@ inputs, extreme timestamps, replay-window-like buffer admission, reorder/loss,
 RTT transitions, stale mappings, independent DAC drift, channel mapping and
 virtual timeline bounds. Desktop tests cover capture packetization, drift,
 per-block timestamp jitter, idle/resume, explicit gaps and command validation.
+Live-availability regressions include capture-block completion, network transit
+and different receiver output queues, including the prior all-concealed failure
+when a 100 ms lead was shorter than the output write-ahead requirement.
 Transport tests exercise real localhost UDP including wrong keys/tampering/replay.
 
 Windows cross-compilation/linking and Android APK builds establish buildability,

@@ -31,6 +31,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
-      - run: cargo fmt --manifest-path apps/android/native/Cargo.toml --check
-      - run: cargo clippy --manifest-path apps/android/native/Cargo.toml --all-targets --locked -- -D warnings
-      - run: cargo test --manifest-path apps/android/native/Cargo.toml --all-targets --locked
+      - name: Install Java for JNI and portable Android logic tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Test Rust, JVM/JNI lifecycle, timing, pairing and QR parsing
+        run: bash apps/android/test.sh
+        # The optional wall-clock live smoke is intentionally excluded from CI.
+        # Deterministic capture-availability scheduling is tested by desktop tests.

@@ -57,6 +57,11 @@ pub(crate) struct PublicState {
     pub message: String,
     pub peers: Vec<PeerState>,
     pub packets: u64,
+    pub lead_ms: Option<u64>,
+    pub capture_allowance_ms: f64,
+    pub capture_peak: f32,
+    pub source_peak: f32,
+    pub capture_age_ms: f64,
     pub receiver_count: usize,
     pub prepared: bool,
     pub windows_supported: bool,
@@ -131,6 +136,11 @@ impl Controller {
                 message: "Create a private setup code. There is no connection deadline.".into(),
                 peers: Vec::new(),
                 packets: 0,
+                lead_ms: None,
+                capture_allowance_ms: 0.0,
+                capture_peak: 0.0,
+                source_peak: 0.0,
+                capture_age_ms: 0.0,
                 receiver_count: 0,
                 prepared: false,
                 windows_supported: cfg!(windows),
@@ -274,6 +284,11 @@ impl Controller {
             s.title = "Your private setup is ready".into();
             s.message = if cfg!(windows) { "Reveal and copy the complete code into Android, then start listening. Android may connect before or after you start." } else { "This cloud/Linux controller can prepare and display setup, but real audio hosting requires Windows. No audio stream is running." }.into();
             s.packets = 0;
+            s.lead_ms = None;
+            s.capture_allowance_ms = 0.0;
+            s.capture_peak = 0.0;
+            s.source_peak = 0.0;
+            s.capture_age_ms = 0.0;
             s.peers = (0..count)
                 .map(|index| PeerState {
                     index,
@@ -347,6 +362,11 @@ impl Controller {
             s.title = "Waiting for Android".into();
             s.message = "Listening until you press Stop. Paste the complete code into Android and connect whenever ready.".into();
             s.packets = 0;
+            s.lead_ms = None;
+            s.capture_allowance_ms = 0.0;
+            s.capture_peak = 0.0;
+            s.source_peak = 0.0;
+            s.capture_age_ms = 0.0;
             for peer in &mut s.peers {
                 peer.message = "Opening listener".into();
             }

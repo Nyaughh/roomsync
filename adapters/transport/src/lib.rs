@@ -31,6 +31,11 @@ const CLOSE: u8 = 6;
 const HEARTBEAT: u8 = 7;
 const SET_TIMELINE: u8 = 8;
 const TIMELINE_ACK: u8 = 9;
+const RECEIVER_READINESS: u8 = 10;
+const READINESS_ACK: u8 = 11;
+
+/// Maximum negotiated send lead, leaving 20ms headroom in the 320ms core window.
+pub const MAX_NEGOTIATED_LEAD_NS: u64 = 300_000_000;
 
 mod pairing;
 pub use pairing::{PairingListener, PairingProgress, PairingStage};
@@ -58,6 +63,9 @@ pub enum Error {
     ClockUnavailable,
     Cancelled,
     TimelineNotReady,
+    ReceiverNotReady,
+    ReadinessChanged,
+    IncompatibleProtocol,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -80,6 +88,9 @@ impl fmt::Display for Error {
             Self::TimelineNotReady => {
                 f.write_str("waiting for an authenticated playback timeline acknowledgment")
             }
+            Self::ReceiverNotReady => f.write_str("waiting for authenticated receiver output calibration"),
+            Self::ReadinessChanged => f.write_str("receiver output timing changed after scheduling; stop and reconnect to calibrate again"),
+            Self::IncompatibleProtocol => f.write_str("peer uses a different audio-readiness protocol; update both apps to the same release"),
             Self::ClockUnavailable => {
                 f.write_str("monotonic hardware clock unavailable; session must stop")
             }
@@ -220,6 +231,34 @@ pub struct SessionInfo {
     /// Host monotonic nanoseconds when audio frame zero should reach the DAC.
     pub epoch_host_ns: u64,
 }
+/// Measured receiver write-ahead and one render block, both in nanoseconds.
+/// This is telemetry, not a request to allocate a buffer of the supplied size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiverReadiness {
+    pub output_horizon_ns: u64,
+    pub render_block_ns: u64,
+}
+impl ReceiverReadiness {
+    pub fn validate(self) -> Result<Self> {
+        if self.output_horizon_ns > 1_000_000_000
+            || self.render_block_ns == 0
+            || self.render_block_ns > 100_000_000
+        {
+            return Err(Error::InvalidConfig(
+                "receiver output horizon must be 0..=1s and render block 1ns..=100ms",
+            ));
+        }
+        Ok(self)
+    }
+    pub fn minimum_lead_ns(self) -> Result<u64> {
+        let checked = self.validate()?;
+        checked
+            .output_horizon_ns
+            .checked_add(checked.render_block_ns)
+            .ok_or(Error::InvalidConfig("receiver timing budget overflow"))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Host,
@@ -232,6 +271,8 @@ pub enum Event {
     ClockSample(ClockExchange),
     Timeline(SessionInfo),
     TimelineAcknowledged(SessionInfo),
+    ReceiverReady(ReceiverReadiness),
+    ReadinessAcknowledged(ReceiverReadiness),
     Heartbeat,
     Closed,
 }
@@ -620,6 +661,12 @@ pub struct Session {
     audio_started: bool,
     timeline_acknowledged: bool,
     timeline_control_nonce: Option<u64>,
+    readiness_required: bool,
+    reported_readiness: Option<ReceiverReadiness>,
+    peer_readiness: Option<ReceiverReadiness>,
+    readiness_control_nonce: Option<u64>,
+    readiness_acknowledged: bool,
+    negotiated_lead_ns: Option<u64>,
 }
 impl Session {
     fn new(
@@ -668,6 +715,12 @@ impl Session {
             audio_started: false,
             timeline_acknowledged: info.epoch_host_ns != 0,
             timeline_control_nonce: None,
+            readiness_required: false,
+            reported_readiness: None,
+            peer_readiness: None,
+            readiness_control_nonce: None,
+            readiness_acknowledged: false,
+            negotiated_lead_ns: None,
         }
         // endpoint.key is zeroized here; transport state owns derived session keys.
     }
@@ -748,10 +801,60 @@ impl Session {
         Ok(())
     }
 
-    /// Assign/retry the common future timeline after all peers have paired.
-    /// Wait for TimelineAcknowledged before sending audio. Repeating identical
-    /// metadata is safe; changing the timeline after audio starts is prohibited.
+    /// Latest authenticated receiver telemetry on the host. No secret material.
+    pub fn peer_readiness(&self) -> Option<ReceiverReadiness> {
+        self.peer_readiness
+    }
+    /// Chosen send-ahead duration, authenticated in the readiness-capable timeline.
+    pub fn negotiated_lead_ns(&self) -> Option<u64> {
+        self.negotiated_lead_ns
+    }
+    pub fn readiness_acknowledged(&self) -> bool {
+        self.readiness_acknowledged
+    }
+
+    /// Report measured output timing while paired but not yet scheduled. Retry
+    /// the same value until ReadinessAcknowledged. The CALLER owns periodic
+    /// resends (for example every 250 ms); poll does not schedule these sends.
+    /// A route change after a timeline
+    /// requires closing and reconnecting, never silently changing live timing.
+    pub fn report_readiness(&mut self, readiness: ReceiverReadiness) -> Result<()> {
+        if self.role != Role::Receiver {
+            return Err(Error::WrongRole);
+        }
+        readiness.validate()?;
+        if self.info.epoch_host_ns != 0 && self.reported_readiness != Some(readiness) {
+            return Err(Error::ReadinessChanged);
+        }
+        if self.reported_readiness != Some(readiness) {
+            self.readiness_acknowledged = false;
+        }
+        self.reported_readiness = Some(readiness);
+        self.send(&readiness_payload(RECEIVER_READINESS, readiness))
+    }
+
+    /// Legacy timeline API. New interactive sessions must declare an approved
+    /// send lead with set_timeline_with_lead after receiving output readiness.
     pub fn set_timeline(&mut self, info: SessionInfo) -> Result<()> {
+        if self.role != Role::Host {
+            return Err(Error::WrongRole);
+        }
+        if self.readiness_required {
+            return Err(Error::ReceiverNotReady);
+        }
+        self.set_timeline_inner(info, None)
+    }
+
+    pub fn set_timeline_with_lead(&mut self, info: SessionInfo, lead_ns: u64) -> Result<()> {
+        if self.role != Role::Host {
+            return Err(Error::WrongRole);
+        }
+        let readiness = self.peer_readiness.ok_or(Error::ReceiverNotReady)?;
+        validate_lead(lead_ns, readiness)?;
+        self.set_timeline_inner(info, Some(lead_ns))
+    }
+
+    fn set_timeline_inner(&mut self, info: SessionInfo, lead: Option<u64>) -> Result<()> {
         if self.role != Role::Host {
             return Err(Error::WrongRole);
         }
@@ -764,16 +867,21 @@ impl Session {
                 "timeline must have a nonzero id and start within the next 60 seconds",
             ));
         }
-        if self.audio_started && info != self.info {
+        if self.audio_started && (info != self.info || lead != self.negotiated_lead_ns) {
             return Err(Error::InvalidConfig(
-                "cannot change timeline after audio starts",
+                "cannot change timeline or send lead after audio starts",
             ));
         }
-        if info != self.info {
+        if info != self.info || lead != self.negotiated_lead_ns {
             self.timeline_acknowledged = false;
         }
         self.info = info;
-        self.send(&timeline_payload(SET_TIMELINE, info))
+        self.negotiated_lead_ns = lead;
+        if let Some(lead) = lead {
+            self.send(&timeline_lead_payload(SET_TIMELINE, info, lead))
+        } else {
+            self.send(&timeline_payload(SET_TIMELINE, info))
+        }
     }
 
     pub fn request_clock(&mut self) -> Result<()> {
@@ -953,7 +1061,43 @@ impl Session {
                     self.last_authenticated = Instant::now();
                     return Ok(Some(Event::Audio(packet)));
                 }
-                (SET_TIMELINE, 17) if self.role == Role::Receiver => {
+                (RECEIVER_READINESS, 17) if self.role == Role::Host => {
+                    if self
+                        .readiness_control_nonce
+                        .is_some_and(|previous| nonce < previous)
+                    {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
+                    let readiness = decode_readiness(&plain);
+                    if readiness.validate().is_err() {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
+                    if self.info.epoch_host_ns != 0 && self.peer_readiness != Some(readiness) {
+                        self.closed = true;
+                        return Err(Error::ReadinessChanged);
+                    }
+                    let changed = self.peer_readiness != Some(readiness);
+                    self.peer_readiness = Some(readiness);
+                    self.readiness_control_nonce = Some(nonce);
+                    self.last_authenticated = Instant::now();
+                    self.send(&readiness_payload(READINESS_ACK, readiness))?;
+                    if changed {
+                        return Ok(Some(Event::ReceiverReady(readiness)));
+                    }
+                }
+                (READINESS_ACK, 17) if self.role == Role::Receiver => {
+                    let readiness = decode_readiness(&plain);
+                    if readiness.validate().is_err() || self.reported_readiness != Some(readiness) {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
+                    self.readiness_acknowledged = true;
+                    self.last_authenticated = Instant::now();
+                    return Ok(Some(Event::ReadinessAcknowledged(readiness)));
+                }
+                (SET_TIMELINE, 17 | 25) if self.role == Role::Receiver => {
                     if self
                         .timeline_control_nonce
                         .is_some_and(|previous| nonce < previous)
@@ -965,29 +1109,62 @@ impl Session {
                         session_id: read_u64(&plain[1..9]),
                         epoch_host_ns: read_u64(&plain[9..17]),
                     };
+                    let lead = if len == 25 {
+                        Some(read_u64(&plain[17..25]))
+                    } else {
+                        None
+                    };
                     if info.session_id == 0
                         || info.epoch_host_ns == 0
-                        || (self.audio_started && info != self.info)
+                        || (self.audio_started
+                            && (info != self.info || lead != self.negotiated_lead_ns))
                     {
                         self.stats.malformed_rejected += 1;
                         continue;
                     }
-                    let changed = info != self.info;
+                    if self.readiness_required && lead.is_none() {
+                        self.closed = true;
+                        return Err(Error::IncompatibleProtocol);
+                    }
+                    if let Some(lead) = lead {
+                        let Some(readiness) = self.reported_readiness else {
+                            self.closed = true;
+                            return Err(Error::ReceiverNotReady);
+                        };
+                        if let Err(error) = validate_lead(lead, readiness) {
+                            self.closed = true;
+                            return Err(error);
+                        }
+                    }
+                    let changed = info != self.info || lead != self.negotiated_lead_ns;
                     self.timeline_control_nonce = Some(nonce);
                     self.info = info;
+                    self.negotiated_lead_ns = lead;
                     self.last_authenticated = Instant::now();
-                    self.send(&timeline_payload(TIMELINE_ACK, info))?;
+                    if let Some(lead) = lead {
+                        self.send(&timeline_lead_payload(TIMELINE_ACK, info, lead))?;
+                    } else {
+                        self.send(&timeline_payload(TIMELINE_ACK, info))?;
+                    }
                     if changed {
                         self.audio_replay = ReplayWindow::default();
                         return Ok(Some(Event::Timeline(info)));
                     }
                 }
-                (TIMELINE_ACK, 17) if self.role == Role::Host => {
+                (TIMELINE_ACK, 17 | 25) if self.role == Role::Host => {
                     let info = SessionInfo {
                         session_id: read_u64(&plain[1..9]),
                         epoch_host_ns: read_u64(&plain[9..17]),
                     };
-                    if info != self.info || info.epoch_host_ns == 0 {
+                    let lead = if len == 25 {
+                        Some(read_u64(&plain[17..25]))
+                    } else {
+                        None
+                    };
+                    if info != self.info
+                        || lead != self.negotiated_lead_ns
+                        || info.epoch_host_ns == 0
+                    {
                         self.stats.malformed_rejected += 1;
                         continue;
                     }
@@ -1046,6 +1223,34 @@ impl Session {
     }
 }
 
+fn validate_lead(lead_ns: u64, readiness: ReceiverReadiness) -> Result<()> {
+    let minimum = readiness.minimum_lead_ns()?;
+    if lead_ns == 0 || lead_ns > MAX_NEGOTIATED_LEAD_NS || lead_ns < minimum {
+        return Err(Error::InvalidConfig(
+            "send lead must cover receiver horizon plus render block and be at most 300ms; unsupported output route, do not clamp",
+        ));
+    }
+    Ok(())
+}
+fn readiness_payload(kind: u8, readiness: ReceiverReadiness) -> [u8; 17] {
+    let mut payload = [0; 17];
+    payload[0] = kind;
+    payload[1..9].copy_from_slice(&readiness.output_horizon_ns.to_be_bytes());
+    payload[9..17].copy_from_slice(&readiness.render_block_ns.to_be_bytes());
+    payload
+}
+fn decode_readiness(plain: &[u8; MAX_PLAIN]) -> ReceiverReadiness {
+    ReceiverReadiness {
+        output_horizon_ns: read_u64(&plain[1..9]),
+        render_block_ns: read_u64(&plain[9..17]),
+    }
+}
+fn timeline_lead_payload(kind: u8, info: SessionInfo, lead_ns: u64) -> [u8; 25] {
+    let mut payload = [0; 25];
+    payload[..17].copy_from_slice(&timeline_payload(kind, info));
+    payload[17..].copy_from_slice(&lead_ns.to_be_bytes());
+    payload
+}
 fn timeline_payload(kind: u8, info: SessionInfo) -> [u8; 17] {
     let mut payload = [0; 17];
     payload[0] = kind;
@@ -1059,3 +1264,6 @@ mod tests;
 
 #[cfg(test)]
 mod pairing_tests;
+
+#[cfg(test)]
+mod readiness_tests;

@@ -5,6 +5,7 @@ final class Timing {
     private long lastPosition = -1;
     private long lastNs = -1;
     private boolean advancing;
+    private long advances;
     private long invalidSince = -1;
 
     boolean observe(long position, long nanoTime, long nowNs, long written) {
@@ -19,7 +20,7 @@ final class Timing {
         if (lastPosition >= 0 && (position < lastPosition || nanoTime < lastNs)) {
             throw new IllegalStateException("Audio hardware timeline changed. Reconnect to recalibrate.");
         }
-        if (lastPosition >= 0 && position > lastPosition && nanoTime > lastNs) advancing = true;
+        if (lastPosition >= 0 && position > lastPosition && nanoTime > lastNs) { advancing = true; advances++; }
         lastPosition = position;
         lastNs = nanoTime;
         return advancing;
@@ -35,6 +36,9 @@ final class Timing {
         invalidSince = -1;
         return result;
     }
+
+    long advances() { return advances; }
+    long observationNs() { return lastNs; }
 
     boolean expired(long nowNs) {
         if (invalidSince < 0) invalidSince = nowNs;

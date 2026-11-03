@@ -1,4 +1,5 @@
 //! Timestamped source normalization and packetization, shared by the desktop CLI.
+pub mod budget;
 use roomsync_core::{AudioPacket, FRAMES_PER_PACKET, SAMPLE_RATE, protocol::SAMPLES_PER_PACKET};
 use roomsync_windows::convert::f32_to_pcm16;
 

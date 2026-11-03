@@ -12,6 +12,7 @@ public final class NativeSmoke {
         try {
             check(NativeReceiver.phase(handle)==1);
             check(!NativeReceiver.status(handle).contains(new String(key)));
+            rejected=false;try{NativeReceiver.reportReadiness(handle,100_000_000L,10_000_000L);}catch(IllegalStateException e){rejected=true;}check(rejected);
             float[] output=new float[240];Arrays.fill(output,1f);
             NativeReceiver.render(handle,System.nanoTime(),120,output);for(float f:output)check(f==0f);
             rejected=false;try{NativeReceiver.render(handle,System.nanoTime(),961,new float[1922]);}catch(IllegalStateException e){rejected=true;}check(rejected);

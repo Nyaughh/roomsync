@@ -29,6 +29,22 @@ SPSC queue and report overflow instead of growing memory or hiding dropouts.
 
 ## Timing controls
 
+Before the interactive host publishes a timeline, every authenticated receiver
+runs its output silently and reports its calibrated maximum write-ahead horizon
+and complete render-batch duration. The host adds the Windows capture-buffer /
+stream-latency / engine-period allowance and 30 ms for network and clock variation.
+It chooses one common lead, rounded upward to 10 ms. A user preference is only a
+minimum. A requirement above 300 ms is rejected, leaving 20 ms inside the fixed
+320 ms packet window rather than silently asking for source audio before capture.
+The chosen lead is authenticated with the timeline and validated by receivers.
+A changed calibrated output requirement means restarting the group.
+
+The regression suite models when a captured block actually becomes available,
+not just preloaded synthetic audio. It reproduces the former all-concealed output
+at 100 ms source lead with a 150 ms receiver queue, then verifies the calibrated
+path, including identical nonconstant PCM at shared DAC times across mixed queues.
+This is virtual timing evidence, not an acoustic synchronization measurement.
+
 The renderer separately estimates the DAC sample clock from correlated presentation timestamps and frame counts, mutes until host-clock lock, mutes stale mappings, and slews small clock-model
 corrections at up to 200 ppm, and reports/fades re-anchors above five milliseconds.
 Drift correction uses inexpensive linear interpolation. This is suitable for
@@ -48,17 +64,37 @@ frequency responses and acoustic propagation delays.
   Event-driven loopback is supported on Windows 10 version 1703+. Protected audio
   can be unavailable. Capture does not itself silence or delay the host's existing
   speaker output. Microsoft: https://learn.microsoft.com/windows/win32/coreaudio/loopback-recording
-- **Android receiver:** Oboe/AAudio callbacks, negotiated native rates, timestamp
-  observation and buffer tuning are the intended path. Low-latency/exclusive mode
-  is a request, not guaranteed hardware behavior. Google:
-  https://developer.android.com/games/sdk/oboe/low-latency-audio
-  and https://github.com/google/oboe/blob/main/docs/FullGuide.md
+- **Android receiver:** the current native Rust receiver is fed through JNI by a
+  48 kHz float `AudioTrack`. `AudioTimestamp` correlates frame positions with the
+  monotonic clock, including queued presentation time. Low-latency mode is a
+  request, not guaranteed behavior; output queues are calibrated before playback.
+  Google: https://developer.android.com/reference/android/media/AudioTrack
+  and https://developer.android.com/reference/android/media/AudioTimestamp
 - **Apple receiver:** AVAudioEngine provides a native real-time audio graph;
   AVAudioSession route, interruptions and output latency require careful handling.
   Apple: https://developer.apple.com/documentation/avfaudio/avaudioengine
-- No mobile app or universal macOS/Linux system-audio capture is implied by this
-  core. Each adapter must advertise only operations actually implemented and
-  hardware-tested. Bluetooth adds output buffering outside this core's control.
+- Android implementation lives in `apps/android`; iOS and universal macOS/Linux
+  system capture remain unimplemented. Each adapter must advertise only operations
+  actually implemented and distinguish build tests from hardware validation.
+  Bluetooth adds output buffering outside this core's control.
+
+## Host-speaker routing is not implemented
+
+Endpoint loopback observes the mix already sent toward the physical output. It
+does not withhold the original sound while RoomSync buffers the remote copies.
+Default loopback is tapped before endpoint volume/mute, but muting that endpoint
+also silences RoomSync's delayed replay on the same endpoint. Process loopback
+can exclude RoomSync's process to prevent feedback; it does not provide a
+suppress-original-playback option. Arbitrary system audio needs an independently
+silent source route, such as a properly signed virtual endpoint, before both
+host and phones can render the delayed stream. That routing/driver work is not
+included in this preview. A source owned by RoomSync could be delayed directly,
+but that would not cover arbitrary Spotify or system audio.
+
+Microsoft references:
+- https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-audclnt_streamoptions
+- https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/
+- https://learn.microsoft.com/en-us/samples/microsoft/windows-driver-samples/sysvad-virtual-audio-device-driver-sample/
 
 ## Required pre-release gates
 

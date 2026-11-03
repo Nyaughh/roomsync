@@ -7,10 +7,12 @@ use jni::{
 };
 use roomsync_core::{
     clock::ClockSynchronizer,
+    jitter::InsertResult,
     render::{ChannelMap, Renderer},
 };
 use roomsync_transport::{
-    Config, Endpoint, Event, MonotonicClock, PairingKey, PairingProgress, SessionInfo,
+    Config, Endpoint, Event, MonotonicClock, PairingKey, PairingProgress, ReceiverReadiness,
+    SessionInfo,
 };
 use std::{
     net::{IpAddr, SocketAddr, UdpSocket},
@@ -43,6 +45,39 @@ fn monotonic_ns() -> roomsync_transport::Result<u64> {
         .ok_or(roomsync_transport::Error::ClockUnavailable)
 }
 
+struct LateFrames {
+    recent: [u64; 256],
+    count: usize,
+    next: usize,
+    maximum: u64,
+}
+impl Default for LateFrames {
+    fn default() -> Self {
+        Self {
+            recent: [0; 256],
+            count: 0,
+            next: 0,
+            maximum: 0,
+        }
+    }
+}
+impl LateFrames {
+    fn record(&mut self, frames: u64) {
+        self.recent[self.next] = frames;
+        self.next = (self.next + 1) % self.recent.len();
+        self.count = (self.count + 1).min(self.recent.len());
+        self.maximum = self.maximum.max(frames);
+    }
+    fn p95(&self) -> u64 {
+        if self.count == 0 {
+            return 0;
+        }
+        let mut sorted = self.recent;
+        sorted[..self.count].sort_unstable();
+        sorted[(self.count * 95).div_ceil(100) - 1]
+    }
+}
+
 struct Playout {
     paired: bool,
     timeline: Option<SessionInfo>,
@@ -57,6 +92,16 @@ struct Playout {
     concealed: u64,
     waiting: u64,
     realignments: u64,
+    readiness: Option<ReceiverReadiness>,
+    negotiated_lead_ns: Option<u64>,
+    output_horizon_ns: u64,
+    latest_source_frame: Option<u64>,
+    input_peak: f32,
+    output_peak: f32,
+    last_concealed: usize,
+    last_waiting: usize,
+    last_frames: usize,
+    late_frames: LateFrames,
 }
 impl Default for Playout {
     fn default() -> Self {
@@ -74,6 +119,16 @@ impl Default for Playout {
             concealed: 0,
             waiting: 0,
             realignments: 0,
+            readiness: None,
+            negotiated_lead_ns: None,
+            output_horizon_ns: 0,
+            latest_source_frame: None,
+            input_peak: 0.0,
+            output_peak: 0.0,
+            last_concealed: 0,
+            last_waiting: 0,
+            last_frames: 0,
+            late_frames: LateFrames::default(),
         }
     }
 }
@@ -151,7 +206,19 @@ impl Receiver {
             state.paired = true;
         }
         let mut clock_due = Instant::now();
+        let mut readiness_due = Instant::now();
         while !self.stop.load(Ordering::Relaxed) {
+            if !session.readiness_acknowledged() && Instant::now() >= readiness_due {
+                let readiness = self
+                    .state
+                    .lock()
+                    .map_err(|_| "Playback state failed")?
+                    .readiness;
+                if let Some(value) = readiness {
+                    session.report_readiness(value).map_err(|e| e.to_string())?;
+                    readiness_due = Instant::now() + Duration::from_millis(250);
+                }
+            }
             if Instant::now() >= clock_due {
                 match session.request_clock() {
                     Ok(()) | Err(roomsync_transport::Error::PendingClockLimit) => (),
@@ -165,8 +232,30 @@ impl Receiver {
             {
                 Some(Event::Audio(packet)) => {
                     let mut state = self.state.lock().map_err(|_| "Playback state failed")?;
+                    let last_frame = packet.first_frame()
+                        + roomsync_core::protocol::FRAMES_PER_PACKET as u64
+                        - 1;
+                    state.latest_source_frame = Some(
+                        state
+                            .latest_source_frame
+                            .map_or(last_frame, |old| old.max(last_frame)),
+                    );
+                    state.input_peak = packet
+                        .samples()
+                        .iter()
+                        .map(|v| f32::from(*v).abs() / 32768.0)
+                        .fold(0.0, f32::max);
                     if let Some(renderer) = state.renderer.as_mut() {
-                        renderer.push(packet);
+                        // Every insertion is counted by renderer.stats(), including
+                        // late/too-far PCM that passed transport authentication.
+                        let cursor = renderer.source_cursor();
+                        if renderer.push(packet) == InsertResult::Late {
+                            if let Some(cursor) = cursor {
+                                state
+                                    .late_frames
+                                    .record((cursor - last_frame as f64).max(0.0).ceil() as u64);
+                            }
+                        }
                     }
                     state.packets += 1;
                 }
@@ -178,6 +267,7 @@ impl Receiver {
                                 .map_err(|e| format!("Renderer: {e:?}"))?,
                         );
                         state.timeline = Some(info);
+                        state.negotiated_lead_ns = session.negotiated_lead_ns();
                     }
                 }
                 Some(Event::ClockSample(sample)) => {
@@ -216,6 +306,25 @@ impl Receiver {
             }
         }
     }
+    fn report_readiness(&self, value: ReceiverReadiness) -> Result<(), String> {
+        if value.output_horizon_ns > 1_000_000_000
+            || !(1..=100_000_000).contains(&value.render_block_ns)
+        {
+            return Err("Output calibration is outside supported bounds".into());
+        }
+        let mut state = self.state.lock().map_err(|_| "Playback state failed")?;
+        if !state.paired || state.timeline.is_some() {
+            return Err(
+                "Output calibration must finish after pairing and before playback. Reconnect."
+                    .into(),
+            );
+        }
+        if state.readiness.is_some_and(|old| old != value) {
+            return Err("Output calibration changed. Reconnect to renegotiate playback.".into());
+        }
+        state.readiness = Some(value);
+        Ok(())
+    }
     fn render(&self, dac_ns: u64, out: &mut [[f32; 2]]) -> Result<(), String> {
         out.fill([0.0; 2]);
         if out.len() > MAX_RENDER_FRAMES {
@@ -228,6 +337,11 @@ impl Receiver {
         if let Some(e) = &state.error {
             return Err(e.clone());
         }
+        state.output_horizon_ns = dac_ns.saturating_sub(monotonic_ns().map_err(|e| e.to_string())?);
+        state.output_peak = 0.0;
+        state.last_frames = out.len();
+        state.last_concealed = 0;
+        state.last_waiting = out.len();
         let Some(model) = state.sync.model() else {
             state.waiting += out.len() as u64;
             return Ok(());
@@ -238,6 +352,9 @@ impl Receiver {
         let report = renderer
             .render(dac_ns, 48_000, model, out)
             .map_err(|e| format!("Renderer: {e:?}"))?;
+        state.output_peak = out.iter().flatten().map(|v| v.abs()).fold(0.0, f32::max);
+        state.last_concealed = report.concealed_frames;
+        state.last_waiting = report.waiting_frames;
         state.rendered += report.frames as u64;
         state.concealed += report.concealed_frames as u64;
         state.waiting += report.waiting_frames as u64;
@@ -303,18 +420,52 @@ impl Receiver {
                 s.progress.peer_unreachable
             );
         }
-        format!(
-            "{}\n{}\nPackets: {} · Rejected: {}\nConcealed: {} frames · Realignments: {}\n{}",
-            if s.renderer.is_some() {
-                "Encrypted session established"
+        let health = if s.renderer.is_none() {
+            if s.readiness.is_some() {
+                "Paired securely. Output calibrated; waiting for Windows and the other receivers."
             } else {
-                "Paired securely. Waiting for the Windows playback timeline."
-            },
+                "Paired securely. Measuring output latency before playback."
+            }
+        } else if s.last_frames == 0 || s.last_waiting == s.last_frames {
+            "Encrypted session ready. Waiting for the synchronized start or fresh clock lock."
+        } else if s.last_concealed + s.last_waiting == s.last_frames {
+            "No playable samples for this output deadline. Receiving silence from packet concealment."
+        } else if s.output_peak == 0.0 {
+            "Received audio for this deadline is silent. Check the Windows source playback."
+        } else {
+            "Nonzero audio rendered against measured timestamps."
+        };
+        let buffer = s.renderer.as_ref().map_or_else(|| "Jitter buffer: waiting for timeline".into(), |r| {
+            let stats = r.stats();
+            format!("Jitter accepted: {} · Late: {} · Too far: {} · Duplicates: {}\nNext source frame: {} · Newest received: {}",
+                stats.accepted, stats.late, stats.too_far, stats.duplicates,
+                r.source_cursor().map_or_else(|| "not started".into(), |v| format!("{v:.0}")),
+                s.latest_source_frame.map_or_else(|| "none".into(), |v| v.to_string()))
+        });
+        format!(
+            "{}\n{}\nPackets: {} · Transport rejected: {}\n{}\nLate-packet lag: p95 {} frames (last {}), max {} frames\nConcealed: {} frames · Realignments: {}\nLatest block missing: {}/{} · Waiting: {}\nPCM peak received: {:.4} · Rendered: {:.4}\nNext-write DAC horizon: {:.1} ms · Calibrated max: {} · Shared lead: {}\n{}",
+            health,
             s.endpoint,
             s.packets,
             s.rejected,
+            buffer,
+            s.late_frames.p95(),
+            s.late_frames.count,
+            s.late_frames.maximum,
             s.concealed,
             s.realignments,
+            s.last_concealed,
+            s.last_frames,
+            s.last_waiting,
+            s.input_peak,
+            s.output_peak,
+            s.output_horizon_ns as f64 / 1e6,
+            s.readiness.map_or_else(
+                || "measuring".into(),
+                |v| format!("{:.1} ms", v.output_horizon_ns as f64 / 1e6)
+            ),
+            s.negotiated_lead_ns
+                .map_or_else(|| "waiting".into(), |v| format!("{:.1} ms", v as f64 / 1e6)),
             clock
         )
     }
@@ -422,6 +573,28 @@ pub extern "system" fn Java_dev_roomsync_NativeReceiver_status(
     }
 }
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_roomsync_NativeReceiver_reportReadiness(
+    mut env: JNIEnv,
+    _: JClass,
+    id: jlong,
+    horizon: jlong,
+    block: jlong,
+) {
+    let result = if horizon < 0 || block <= 0 {
+        Err("Invalid output calibration".into())
+    } else if let Some(receiver) = find(id) {
+        receiver.report_readiness(ReceiverReadiness {
+            output_horizon_ns: horizon as u64,
+            render_block_ns: block as u64,
+        })
+    } else {
+        Err("Receiver has stopped".into())
+    };
+    if let Err(e) = result {
+        exception(&mut env, e);
+    }
+}
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_roomsync_NativeReceiver_render(
     mut env: JNIEnv,
     _: JClass,
@@ -495,6 +668,67 @@ mod tests {
         assert!(r.render(0, &mut [[0.0; 2]; 961]).is_err());
     }
     #[test]
+    fn late_frame_diagnostics_are_bounded_and_explicit() {
+        let mut samples = LateFrames::default();
+        assert_eq!(samples.p95(), 0);
+        for n in 1..=100 {
+            samples.record(n);
+        }
+        assert_eq!(samples.p95(), 95);
+        assert_eq!(samples.maximum, 100);
+        for _ in 0..300 {
+            samples.record(20);
+        }
+        assert_eq!(samples.count, 256);
+        assert_eq!(samples.p95(), 20);
+        assert_eq!(samples.maximum, 100);
+    }
+    #[test]
+    fn readiness_is_measured_once_before_timeline_and_bounded() {
+        let receiver = Receiver {
+            stop: AtomicBool::new(false),
+            state: Mutex::new(Playout::default()),
+            worker: Mutex::new(None),
+        };
+        let value = ReceiverReadiness {
+            output_horizon_ns: 150_000_000,
+            render_block_ns: 10_000_000,
+        };
+        assert!(receiver.report_readiness(value).is_err());
+        receiver.state.lock().unwrap().paired = true;
+        assert!(
+            receiver
+                .report_readiness(ReceiverReadiness {
+                    output_horizon_ns: u64::MAX,
+                    ..value
+                })
+                .is_err()
+        );
+        assert!(
+            receiver
+                .report_readiness(ReceiverReadiness {
+                    render_block_ns: 0,
+                    ..value
+                })
+                .is_err()
+        );
+        receiver.report_readiness(value).unwrap();
+        receiver.report_readiness(value).unwrap();
+        assert!(
+            receiver
+                .report_readiness(ReceiverReadiness {
+                    output_horizon_ns: 200_000_000,
+                    ..value
+                })
+                .is_err()
+        );
+        receiver.state.lock().unwrap().timeline = Some(SessionInfo {
+            session_id: 1,
+            epoch_host_ns: 1,
+        });
+        assert!(receiver.report_readiness(value).is_err());
+    }
+    #[test]
     fn invalid_handle_and_port_are_rejected() {
         assert!(find(-1).is_none());
         assert!(
@@ -543,7 +777,7 @@ mod tests {
                 session_id: session.info().session_id,
                 epoch_host_ns: monotonic_ns().unwrap() + 2_000_000_000,
             };
-            session.set_timeline(info).unwrap();
+            session.set_timeline_with_lead(info, 100_000_000).unwrap();
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
                 assert!(Instant::now() < deadline, "timeline not acknowledged");
@@ -593,6 +827,12 @@ mod tests {
             4,
             "paired receiver must wait for a real timeline"
         );
+        receiver
+            .report_readiness(ReceiverReadiness {
+                output_horizon_ns: 40_000_000,
+                render_block_ns: 10_000_000,
+            })
+            .unwrap();
         let epoch = rx.recv_timeout(Duration::from_secs(6)).unwrap();
         let until = Instant::now() + Duration::from_secs(3);
         while (receiver.phase() != 3 || receiver.state.lock().unwrap().packets < 10)

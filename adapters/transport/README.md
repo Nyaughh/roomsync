@@ -30,21 +30,26 @@ Use explicit reachable IP addresses and exact UDP ports on both machines. Open o
 
 Input is raw signed PCM16 little-endian, stereo, 48 kHz. Each packet is 120 frames / 480 PCM bytes; input length must be a positive multiple of 480 bytes and at most ten minutes. The receiver writes packets to their sequence positions, so interior missing packets become zero-filled holes. It checks an authenticated final expected count, including trailing/all-packet loss, and exits with an error on loss or an absent finish marker. This is a bounded diagnostic recording, **not** a playout jitter buffer. No retransmission of audio is attempted. UDP close can be lost; idle timeout then reports incomplete reception.
 
-## Interactive pairing (v0.1.1 apps)
+## Interactive pairing and output readiness
 
-The desktop and Android interactive apps use the new cancellable APIs. **Update both apps together.** Their authenticated v2 HELLO identifies support for an unstarted session and a separately acknowledged playback timeline. The older finite API and file CLI remain available for their original diagnostic flow.
+The desktop and Android interactive apps use the new cancellable APIs. **Update both apps together.** Their authenticated revision3 HELLO identifies mandatory output readiness and a separately acknowledged playback timeline with a chosen send lead. The older finite API and file CLI remain available for their original diagnostic flow.
 
 - Host: `Endpoint::bind_listener(local, key, config)?.accept_waiting(clock, &stop_atomic, progress_callback)` listens until Stop, without requiring the phone IP in advance. The local listen address/port and the random pairing key must still be explicitly configured.
 - Receiver: `Endpoint::bind(local, host, key, config)?.join_cancellable(clock, &stop_atomic, progress_callback)` retries on the **same UDP socket and source port** until paired or stopped. Either app can start first. A fresh Noise attempt uses new ephemeral keys; retransmissions reuse the exact same encrypted handshake bytes.
 - Both methods check cancellation at least once per 100 ms of socket wait. Application progress callbacks must return promptly. Bind errors and unrecoverable socket/clock errors still fail explicitly.
 - Successful pairing returns `SessionInfo { epoch_host_ns: 0, ... }`. This means **paired but not scheduled**, never permission to render audio. Continue authenticated clock exchange and host heartbeats while waiting for other people to join.
-- After all expected peers are ready, the host chooses one common random session id and future host epoch. Call `Session::set_timeline(info)` for each peer, repeat periodically until `Event::TimelineAcknowledged(info)`, and require sufficient clock warmup before that epoch. Audio sends fail with `TimelineNotReady` until the ACK arrives.
-- The receiver gets `Event::Timeline(info)` only after validation and automatic acknowledgment; initialize its renderer then. Repeating identical metadata does not reset the renderer. Older out-of-order timeline controls cannot roll back a newer start. Timeline changes after audio has started are rejected.
+- Each receiver must first run its actual output queue, calibrate the write-ahead horizon, and call `Session::report_readiness(ReceiverReadiness { output_horizon_ns, render_block_ns })`. Both fields are nanoseconds. The horizon is bounded to 0..=1s and the render block to 1ns..=100ms. Zero horizon is valid; zero block is not. These values never control an allocation.
+- The application owns retries: resend the same readiness about every 250 ms until `session.readiness_acknowledged()` or `Event::ReadinessAcknowledged`. Lost reports or ACKs converge by retrying; identical reports are re-ACKed without another `ReceiverReady` event. The host receives `Event::ReceiverReady` and can inspect `peer_readiness()`.
+- After all expected peers have reported readiness, the host computes a group lead covering every measured horizon plus render block, its actual capture/engine allowance, and a network/clock guard. The supported send-lead cap is 300 ms, leaving 20 ms of the existing 320 ms jitter window. A larger required budget must fail with a clear unsupported-output-route error, never be silently clamped.
+- The host chooses one common random session id and future host epoch. Call `Session::set_timeline_with_lead(info, chosen_lead_ns)` for each peer, repeat periodically until `Event::TimelineAcknowledged(info)`, and require sufficient clock warmup before that epoch. Transport checks the declared lead against the receiver minimum and 300 ms cap. Both receiver and host can read `negotiated_lead_ns()`. The receiver validates and acknowledges the selected lead as well as the session/epoch. Audio sends fail with `TimelineNotReady` until that ACK arrives.
+- The receiver gets `Event::Timeline(info)` only after readiness and lead validation plus automatic acknowledgment; initialize its renderer then. Repeating identical metadata does not reset the renderer. Older out-of-order readiness or timeline controls cannot roll back a newer value. An identical readiness retry after scheduling is harmless, including an ACK still in flight. Changed output timing after scheduling requires stopping and recalibrating, never silently retiming the live session. Timeline or lead changes after audio has started are rejected.
 - `PairingProgress` reports stage, received packet count, HELLO sends, authenticated WELCOMEs, confirmation sends, wrong-source, malformed, authentication-rejected, incompatible-version, rate-limit, OS peer-unavailable, attempt count and elapsed time. These are observations, not proof that a firewall, Wi-Fi, or a particular key is the cause. No key, key hash, payload or session key is logged.
 
 The listener allocates at most four candidate records. A valid Noise HELLO proves possession of the pairing key but may be a recording, so its source is only a **temporary candidate**. Admission and source pinning require READY authenticated with the fresh session key. Candidates expire without replay extending their deadlines. HELLO and READY authentication work share a 32-operation-per-second budget, and retries are at least 50 ms apart. Invalid traffic cannot claim a session; a captured HELLO cannot prevent a different valid client from pairing. LAN denial of service is still possible and is not claimed to be solved.
 
-New regression tests use real UDP for both start orders, a host arriving six seconds after the receiver (beyond the old Android deadline), cancellation, authentication diagnostics, replayed-candidate isolation, and timeline ordering/acknowledgment.
+New regression tests use real UDP for both start orders, a host arriving six seconds after the receiver (beyond the old Android deadline), cancellation, authentication diagnostics, replayed-candidate isolation, readiness loss/ACK loss/reordering, timing budget limits, version rejection, and timeline ordering/acknowledgment.
+
+The listener sends an authenticated update-version response to older key-valid interactive clients. A new client rejects authenticated incompatible responses explicitly. An older server that does not respond to the new HELLO cannot be distinguished remotely from an unavailable server; update both apps together and use host-side version diagnostics. The legacy finite file-transfer API remains a diagnostic tool and does not certify physical output readiness.
 
 ## App integration
 
@@ -73,7 +78,7 @@ fn receiver(local: SocketAddr, host: SocketAddr, key: PairingKey)
             _ => {}
         }
         // A real worker requests clock samples about every 100ms, not every poll.
-        // Treat PendingClockLimit as backpressure; expired slots free after300ms.
+        // Treat PendingClockLimit as backpressure; expired slots free after 300 ms.
     }
     Ok(())
 }

@@ -27,7 +27,7 @@ fn watchdog(cancel: Arc<AtomicBool>) {
         cancel.store(true, Ordering::Release);
     });
 }
-fn pair() -> (Session, Session) {
+pub(super) fn pair() -> (Session, Session) {
     let listener = Endpoint::bind_listener(localhost(), key(), Config::default()).unwrap();
     let host_addr = listener.local_addr().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
@@ -136,7 +136,10 @@ fn common_timeline_is_acked_before_audio_and_retries_do_not_reset_receiver() {
         session_id: 77,
         epoch_host_ns: host.clock().now_ns().unwrap() + 3_000_000_000,
     };
-    host.set_timeline(info).unwrap();
+    if host.peer_readiness().is_none() {
+        announce_default_readiness(&mut host, &mut receiver);
+    }
+    host.set_timeline_with_lead(info, 200_000_000).unwrap();
     assert!(
         matches!(receiver.poll(Duration::from_millis(100)).unwrap(), Some(Event::Timeline(v)) if v == info)
     );
@@ -149,7 +152,10 @@ fn common_timeline_is_acked_before_audio_and_retries_do_not_reset_receiver() {
     assert!(
         matches!(host.poll(Duration::from_millis(100)).unwrap(), Some(Event::TimelineAcknowledged(v)) if v == info)
     );
-    host.set_timeline(info).unwrap();
+    if host.peer_readiness().is_none() {
+        announce_default_readiness(&mut host, &mut receiver);
+    }
+    host.set_timeline_with_lead(info, 200_000_000).unwrap();
     assert!(receiver.poll(Duration::from_millis(5)).unwrap().is_none());
     assert!(
         matches!(host.poll(Duration::from_millis(100)).unwrap(), Some(Event::TimelineAcknowledged(v)) if v == info)
@@ -159,10 +165,13 @@ fn common_timeline_is_acked_before_audio_and_retries_do_not_reset_receiver() {
         matches!(receiver.poll(Duration::from_millis(100)).unwrap(), Some(Event::Audio(v)) if v == packet)
     );
     assert!(
-        host.set_timeline(SessionInfo {
-            session_id: 78,
-            ..info
-        })
+        host.set_timeline_with_lead(
+            SessionInfo {
+                session_id: 78,
+                ..info
+            },
+            200_000_000
+        )
         .is_err()
     );
 }
@@ -179,10 +188,10 @@ fn unauthenticated_and_replayed_hello_candidates_do_not_claim_listener() {
             .unwrap()
     });
     let attacker = UdpSocket::bind(localhost()).unwrap();
-    attacker.send_to(b"RoomSync receiver v2", addr).unwrap();
+    attacker.send_to(b"RoomSync receiver v3", addr).unwrap();
     // A captured valid HELLO proves membership, not a fresh sender: no READY follows.
     let mut state = handshake(&key(), true).unwrap();
-    let hello = handshake_frame(&mut state, HELLO, b"RoomSync receiver v2").unwrap();
+    let hello = handshake_frame(&mut state, HELLO, b"RoomSync receiver v3").unwrap();
     attacker.send_to(&hello, addr).unwrap();
     let receiver = Endpoint::bind(localhost(), addr, key(), Config::default())
         .unwrap()
@@ -208,7 +217,7 @@ fn diagnostics_distinguish_wrong_key_from_no_traffic_and_bound_auth_work() {
     let attacker = UdpSocket::bind(localhost()).unwrap();
     let wrong_key = PairingKey::from_hex(&"ab".repeat(32)).unwrap();
     let mut state = handshake(&wrong_key, true).unwrap();
-    let hello = handshake_frame(&mut state, HELLO, b"RoomSync receiver v2").unwrap();
+    let hello = handshake_frame(&mut state, HELLO, b"RoomSync receiver v3").unwrap();
     for _ in 0..64 {
         attacker.send_to(&hello, addr).unwrap();
     }
@@ -242,9 +251,15 @@ fn reordered_authenticated_timeline_does_not_roll_back_newer_start() {
         session_id: 22,
         epoch_host_ns: a.epoch_host_ns + 1_000_000_000,
     };
-    let older = host.seal(&timeline_payload(SET_TIMELINE, a)).unwrap();
-    let newer = host.seal(&timeline_payload(SET_TIMELINE, b)).unwrap();
+    announce_default_readiness(&mut host, &mut receiver);
+    let older = host
+        .seal(&timeline_lead_payload(SET_TIMELINE, a, 200_000_000))
+        .unwrap();
+    let newer = host
+        .seal(&timeline_lead_payload(SET_TIMELINE, b, 200_000_000))
+        .unwrap();
     host.info = b;
+    host.negotiated_lead_ns = Some(200_000_000);
     host.socket.send_to(&newer, host.peer).unwrap();
     host.socket.send_to(&older, host.peer).unwrap();
     assert!(
@@ -288,4 +303,18 @@ fn real_six_second_late_host_exceeds_old_android_click_deadline() {
     let receiver = receiver.join().unwrap();
     assert_eq!(host.peer_addr(), receiver.local_addr().unwrap());
     assert_eq!(receiver.info().epoch_host_ns, 0);
+}
+
+fn announce_default_readiness(host: &mut Session, receiver: &mut Session) {
+    let readiness = ReceiverReadiness {
+        output_horizon_ns: 90_000_000,
+        render_block_ns: 10_000_000,
+    };
+    receiver.report_readiness(readiness).unwrap();
+    assert!(
+        matches!(host.poll(Duration::from_millis(100)).unwrap(), Some(Event::ReceiverReady(value)) if value == readiness)
+    );
+    assert!(
+        matches!(receiver.poll(Duration::from_millis(100)).unwrap(), Some(Event::ReadinessAcknowledged(value)) if value == readiness)
+    );
 }

@@ -1,9 +1,9 @@
 //! Cancellable, diagnostic pairing. The legacy finite fixed-peer API remains
-//! available; interactive applications use these v2 handshake entry points.
+//! available; interactive applications use these v3 readiness-capable handshake entry points.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const HELLO_V2: &[u8] = b"RoomSync receiver v2";
+const HELLO_V3: &[u8] = b"RoomSync receiver v3";
 const CANDIDATES: usize = 4;
 const AUTH_PER_SECOND: u32 = 32;
 const WAKE: Duration = Duration::from_millis(100);
@@ -205,7 +205,7 @@ impl Endpoint {
             report.status.stage = PairingStage::WaitingForPeer;
             report.status.attempts += 1;
             let mut state = handshake(&self.key, true)?;
-            let hello = handshake_frame(&mut state, HELLO, HELLO_V2)?;
+            let hello = handshake_frame(&mut state, HELLO, HELLO_V3)?;
             let deadline = Instant::now() + self.config.handshake_timeout;
             let retry = self.config.retry_interval.max(Duration::from_millis(50));
             if report.send_probe(&self.socket, &hello, self.peer)? {
@@ -249,13 +249,13 @@ impl Endpoint {
                     continue 'attempt;
                 };
                 if len != 24
-                    || &plain[..8] != b"RSACPT01"
+                    || &plain[..8] != b"RSACPT03"
                     || read_u64(&plain[8..16]) == 0
                     || read_u64(&plain[16..24]) != 0
                 {
                     report.status.protocol_mismatch += 1;
-                    next_attempt = Instant::now() + retry;
-                    continue 'attempt;
+                    report.emit();
+                    return Err(Error::IncompatibleProtocol);
                 }
                 let info = SessionInfo {
                     session_id: read_u64(&plain[8..16]),
@@ -272,6 +272,7 @@ impl Endpoint {
                     info,
                     crypto,
                 );
+                session.readiness_required = true;
                 let ready = session.seal(&[READY])?;
                 if report.send_probe(&self.socket, &ready, self.peer)? {
                     report.status.confirmations_sent += 1;
@@ -430,8 +431,17 @@ impl PairingListener {
                     report.status.authentication_rejected += 1;
                     continue;
                 };
-                if &plain[..len] != HELLO_V2 {
+                if &plain[..len] != HELLO_V3 {
                     report.status.protocol_mismatch += 1;
+                    // A key-authenticated version rejection, not an unauthenticated
+                    // remote control message. Older interactive clients expose it
+                    // as a protocol mismatch instead of waiting silently.
+                    let mut rejected = [0; 24];
+                    rejected[..8].copy_from_slice(b"RSUPDT03");
+                    let response = handshake_frame(&mut state, WELCOME, &rejected)?;
+                    if self.socket.send_to(&response, from).is_err() {
+                        report.status.peer_unreachable += 1;
+                    }
                     continue;
                 }
                 let mut random = [0; 8];
@@ -441,7 +451,7 @@ impl PairingListener {
                     epoch_host_ns: 0,
                 };
                 let mut payload = [0; 24];
-                payload[..8].copy_from_slice(b"RSACPT01");
+                payload[..8].copy_from_slice(b"RSACPT03");
                 payload[8..16].copy_from_slice(&info.session_id.to_be_bytes());
                 let welcome = handshake_frame(&mut state, WELCOME, &payload)?;
                 if self.socket.send_to(&welcome, from).is_err() {
@@ -510,6 +520,7 @@ impl PairingListener {
                     candidate.info,
                     candidate.crypto,
                 );
+                session.readiness_required = true;
                 session.replay.commit(0);
                 let accepted = session.seal(&[ACCEPTED])?;
                 if session.socket.send_to(&accepted, from).is_err() {

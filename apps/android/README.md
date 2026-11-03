@@ -1,14 +1,14 @@
-# RoomSync Android receiver 0.1.1
+# RoomSync Android receiver 0.1.2
 
 An installable Android 8.0+ receiver using the shared Rust audio/timing core and
 Noise-PSK encrypted UDP. The APK includes **arm64-v8a** and **x86_64** libraries.
 32-bit-only ARM phones are not supported by this preview.
 
-**Update both Windows and Android to 0.1.1.** Interactive pairing now uses a v2
+**Update both Windows and Android to 0.1.2.** Interactive pairing now uses a v3
 handshake and an authenticated playback timeline negotiated after pairing.
 The old five-second Connect window has been removed; either app can start first.
-The Android package is versionCode 2, signed with the same project debug certificate
-as 0.1.0, so the supplied update can install over that version without uninstalling.
+The Android package is versionCode 3, signed with the same project debug certificate
+as 0.1.0/0.1.1, so the supplied update can install over that version without uninstalling.
 
 ## First connection
 
@@ -24,8 +24,10 @@ as 0.1.0, so the supplied update can install over that version without uninstall
    automatically for troubleshooting.
 4. Select the desired output channel, then tap **Connect & play**. Start Windows
    playback whenever ready. Pairing waits and retries until you stop it. After all
-   expected receivers pair, the host assigns a common future timeline and permits
-   a five-second warmup. There is no rushed Connect countdown.
+   expected receivers pair, each plays calibration silence and measures its
+   real output queue. Windows selects one common presentation lead that includes
+   the slowest output, capture batching and a network margin, then assigns a
+   future timeline with a five-second warmup. There is no rushed Connect countdown.
 5. Keep the Windows source output inaudible or use headphones there: its original
    sound is not automatically muted or delayed, so it can echo against phones.
    Start ordinary unprotected music at modest volume.
@@ -47,6 +49,12 @@ channel to both phone output channels; Mono averages the stereo pair.
 Use **Copy diagnostics (no key)** on Android and the Windows status. Diagnostics
 show the actual configured host, UDP bind/selected route IP, elapsed wait, attempts,
 HELLO sends, verified replies, confirmation sends and received/rejected packets.
+After pairing they also show the measured next-write DAC horizon, calibrated
+maximum, negotiated shared lead, real PCM peaks, source-frame position, and jitter
+buffer accepted/late/too-far counts. Late-packet lag shows p95 over the last
+256 late packets and the session maximum in source frames; it is not acoustic
+synchronization error. Transport authentication rejection is separate
+from late audio packets. Nonzero rendered PCM does not prove physical audibility.
 They never include the pairing key or complete setup code.
 
 - No incoming UDP establishes only that no reply has arrived. It does **not** prove
@@ -86,9 +94,17 @@ Java AudioTrack plays 48 kHz stereo float PCM. Advancing AudioTimestamp frame/ti
 observations are projected onto the next output frame in the same CLOCK_MONOTONIC
 domain used by Rust. Shared Rust clock synchronization, bounded jitter buffering,
 interpolation and independent DAC drift estimation determine playback. No guessed
-wall-clock deadline is used. Missing initial hardware timing times out after five
+wall-clock deadline is used. Before the playback timeline is selected, the actual
+silence-filled AudioTrack queue is calibrated over at least 500 ms of advancing
+hardware observations. Its maximum measured next-write horizon and 10 ms render
+block are sent inside the authenticated session. A common lead is bounded to
+300 ms by the existing 320 ms jitter window; unsupported outputs fail explicitly.
+A sustained output-horizon increase greater than 10 ms requires reconnecting. Missing initial hardware timing times out after five
 seconds; loss of an established timeline, route change, clock discontinuity,
-audio-focus interruption or output underrun requires reconnecting.
+permanent audio-focus loss or output underrun requires reconnecting. Short transient
+focus loss mutes output for up to 30 seconds while clocks and current audio keep
+advancing. Gain restores volume only on the still-valid live timeline; a ducking
+request lowers volume without stopping. A longer interruption requires reconnecting.
 
 Status contains actual counters and estimates. Network clock uncertainty is **not
 measured acoustic synchronization error**. Bluetooth, device DSP and acoustic
@@ -109,6 +125,7 @@ and NDK 27.2.12479018 under Google's [SDK terms](https://developer.android.com/s
 rustup target add aarch64-linux-android x86_64-linux-android
 export ANDROID_HOME=/path/to/android-sdk
 ./apps/android/test.sh
+ROOMSYNC_LIVE_TIMING=1 ./apps/android/test.sh # Optional real-time cloud/JNI smoke
 ./apps/android/build.sh
 ```
 
@@ -125,8 +142,22 @@ post-pairing timeline ACK and decoded PCM rendering, delayed/unstarted pairing,
 cancel/rebind, JVM timestamp regressions, actual JNI start/render/cancel/stop,
 strict setup parsing/memory forgetting and offline QR decode from camera-format
 luminance. **Physical Android camera/lifecycle/audio and end-to-end acoustic sync
-are not cloud-validated.** The user's initial 0.1.0 pairing timeout was observed;
-its specific network cause is not inferred from that timeout alone.
+are not cloud-validated.** The user's real phone paired after VPN was paused. A subsequent silence failure
+was reproduced in cloud when live capture's presentation lead was shorter than
+the receiver's measured write-ahead horizon; this release negotiates that budget
+before playback. Physical audio success still needs testing on the phone.
+
+The required Android tests need only Linux, Rust and a JDK, not the Android SDK.
+The desktop suite separately requires deterministic, zero-concealment live-source
+scheduling and equal PCM across different hardware queue horizons. Set
+`ROOMSYNC_LIVE_TIMING=1` to run the additional real JNI/encrypted-UDP smoke with
+mock AudioTrack timestamps and the actual desktop packetizer/budget helper.
+It measures Java callback and capture-send lateness, reproduces the old 100 ms
+source-availability failure, checks negotiated 200/250 ms leads, and rejects an
+unsupported output before playback. This optional wall-clock test can fail under
+cloud scheduling overload and is not a physical audio-quality certification.
+The smoke retains a >95% nonzero-sample threshold for supported live schedules;
+record its actual concealment and lateness, not just its exit code.
 
 Platform references: [AudioTrack](https://developer.android.com/reference/android/media/AudioTrack),
 [AudioTimestamp](https://developer.android.com/reference/android/media/AudioTimestamp),

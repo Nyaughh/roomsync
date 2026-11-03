@@ -12,7 +12,7 @@ LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 for file in "$PLATFORM" "$BT/aapt2" "$BT/d8" "$BT/zipalign" "$BT/apksigner" "$LLVM/aarch64-linux-android26-clang"; do
   [[ -f "$file" ]] || { echo "Missing SDK component: $file" >&2; exit 1; }
 done
-"$ROOT/scripts/fetch-deps.sh"
+bash "$ROOT/scripts/fetch-deps.sh"
 QR="$ROOT/deps/zxing-core-3.5.4.jar"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD" "$BUILD/classes" "$BUILD/generated" "$BUILD/dex" "$BUILD/apk/lib/arm64-v8a" "$BUILD/apk/lib/x86_64"
