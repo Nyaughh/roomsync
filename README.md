@@ -7,11 +7,12 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
-Use Windows **0.1.5** with Android **0.1.4**. Windows 0.1.5 adds opt-in local
-speaker playback through a manually configured virtual source. Android does not
-need replacing for this feature. Protocol revision 3 remains compatible with
-0.1.2–0.1.4, but older hosts retain their previous features and delay settings.
-Versions older than 0.1.2 do not support output-budget negotiation.
+Windows and Android **0.1.6** add bounded timing diagnostics for investigating
+cutouts. This is not a demonstrated playback fix: packet format, buffering policy
+and audio scheduling remain unchanged. Windows 0.1.5 and Android 0.1.4 remain
+compatible. Optional Windows speaker playback still requires the manual virtual
+route introduced in 0.1.5. Versions older than 0.1.2 do not support output-budget
+negotiation.
 
 - Extract the Windows ZIP and open `Start-RoomSync.cmd`. It opens local controls.
   Windows automatically lists its LAN addresses; no phone IP needs typing.
@@ -110,7 +111,7 @@ outputs out of version control.
 ## npm launcher preview
 
 A dependency-free Windows x64 launcher is in [packages/npm](packages/npm/README.md).
-A verified local tarball supports `npx --package ./roomsync-0.1.5.tgz roomsync start`
+A verified local tarball supports `npx --package ./roomsync-0.1.6.tgz roomsync start`
 or a local global install followed by `roomsync start`. It opens the existing
 localhost setup page; it does not begin sharing audio automatically.
 

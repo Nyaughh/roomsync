@@ -45,6 +45,7 @@ test('help and version work without native files on any OS', async t => {
   assert.match(stdout.text, /127\.0\.0\.1/);
   assert.match(stdout.text, /Default capture does not delay or mute original host audio/);
   assert.match(stdout.text, /Windows speakers require explicit virtual routing/);
+  assert.match(stdout.text, /do not prove the physical cause of silence or cutouts/);
   assert.equal(await run(['--version'], { root, platform: 'linux', stdout }), 0);
   assert.match(stdout.text, /0\.1\.3/);
 });

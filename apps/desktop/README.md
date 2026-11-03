@@ -1,4 +1,4 @@
-# RoomSync Windows desktop preview 0.1.5
+# RoomSync Windows desktop diagnostic preview 0.1.6
 
 A native Windows audio host with a small local browser control page. The browser
 handles setup and status only; capture, encryption and audio timing remain native
@@ -7,10 +7,11 @@ validation.** This unsigned preview is not a finished consumer release.
 
 ## Windows → Android: simpler setup
 
-Use Windows **0.1.5** with Android **0.1.4**. This Windows update adds optional
-local speaker playback; the Android app need not be replaced. Protocol revision 3
-remains compatible with 0.1.2–0.1.4, whose hosts keep their existing features and
-preferred minimums. Versions older than 0.1.2 are incompatible with this flow.
+Use Windows and Android **0.1.6** for the additional timing diagnostics. This is
+an investigation build, not a demonstrated cure for cutouts. The audio protocol,
+shared buffering policy and playback behavior are unchanged. Windows 0.1.5 and
+Android 0.1.4 remain compatible; only diagnostic visibility differs. Versions
+older than 0.1.2 are incompatible with output-budget negotiation.
 
 1. Extract the Windows ZIP. Open `Start-RoomSync.cmd`; keep its console open. It
    opens controls on this computer at a random `127.0.0.1` port. If a browser does
@@ -74,6 +75,16 @@ The page distinguishes:
 - Connection details: selected common lead, capture allowance, peak level of
   captured/encoded PCM and capture-block age. Peaks are digital samples, not
   speaker volume or proof that sound reached a physical output.
+
+Per-peer Connection details include host packets sent and maximum queue wait,
+send-call wall time, worker-loop gap and observed queue depth for the current
+session. They reset on Start. Queue wait begins when captured PCM enters that
+peer's local send queue; it excludes earlier capture delay. Send-call time includes encoding/encryption and can
+also include OS scheduling and socket backpressure. None measures Wi-Fi transit or
+physical sound. A successful send call is not a delivery acknowledgment. A large queue wait/gap with little send-call time suggests a
+host dispatch stall; short host timings with late Android admission move the
+investigation downstream, but cannot identify a router versus phone scheduling.
+Use these alongside capture age and Android's receive-worker/lock diagnostics.
 
 The preferred lead in Advanced settings defaults to 40 ms and is a minimum,
 not a way to override a slower receiver. Measured output queues, capture

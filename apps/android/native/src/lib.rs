@@ -45,13 +45,14 @@ fn monotonic_ns() -> roomsync_transport::Result<u64> {
         .ok_or(roomsync_transport::Error::ClockUnavailable)
 }
 
-struct LateFrames {
+#[derive(Clone)]
+struct RecentSamples {
     recent: [u64; 256],
     count: usize,
     next: usize,
     maximum: u64,
 }
-impl Default for LateFrames {
+impl Default for RecentSamples {
     fn default() -> Self {
         Self {
             recent: [0; 256],
@@ -61,12 +62,12 @@ impl Default for LateFrames {
         }
     }
 }
-impl LateFrames {
-    fn record(&mut self, frames: u64) {
-        self.recent[self.next] = frames;
+impl RecentSamples {
+    fn record(&mut self, value: u64) {
+        self.recent[self.next] = value;
         self.next = (self.next + 1) % self.recent.len();
         self.count = (self.count + 1).min(self.recent.len());
-        self.maximum = self.maximum.max(frames);
+        self.maximum = self.maximum.max(value);
     }
     fn p95(&self) -> u64 {
         if self.count == 0 {
@@ -76,6 +77,63 @@ impl LateFrames {
         sorted[..self.count].sort_unstable();
         sorted[(self.count * 95).div_ceil(100) - 1]
     }
+    fn describe_ms(&self) -> String {
+        if self.count == 0 {
+            "not measured".into()
+        } else {
+            format!(
+                "{:.1} / {:.1}",
+                self.p95() as f64 / 1e6,
+                self.maximum as f64 / 1e6
+            )
+        }
+    }
+}
+
+/// Diagnostic samples are fixed-size and never affect playout or admission.
+#[derive(Clone, Default)]
+struct ReceiveTiming {
+    poll_overrun: RecentSamples,
+    between_polls: RecentSamples,
+    audio_gap: RecentSamples,
+    network_lock: RecentSamples,
+    render_lock: RecentSamples,
+    render_work: RecentSamples,
+    source_age: RecentSamples,
+}
+impl ReceiveTiming {
+    fn describe(&self) -> String {
+        format!(
+            "Receive timing, per-metric p95 last up to 256 / session max including startup (ms):\nAudio receive gap: {} · Estimated source age: {}\nSocket poll overrun beyond 5 ms: {} · Between polls: {}\nAudio insert lock wait: {} · Render state-lock wait: {} · Render work: {}\nSource age is inferred from the shared schedule; it includes capture, host sending, transit and receiver processing, not network-only delay.",
+            self.audio_gap.describe_ms(),
+            self.source_age.describe_ms(),
+            self.poll_overrun.describe_ms(),
+            self.between_polls.describe_ms(),
+            self.network_lock.describe_ms(),
+            self.render_lock.describe_ms(),
+            self.render_work.describe_ms(),
+        )
+    }
+}
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+fn source_age_ns(
+    clock: roomsync_core::clock::ClockModel,
+    timeline: SessionInfo,
+    lead_ns: u64,
+    last_frame: u64,
+    received_ns: u64,
+) -> Option<u64> {
+    if !clock.is_locked() || !clock.is_fresh_at(received_ns) {
+        return None;
+    }
+    // Source time is common playback time minus the negotiated lead. This
+    // includes capture batching, host dispatch, transit and local processing;
+    // it is deliberately not described as a network latency measurement.
+    let age = clock.host_elapsed_ns(received_ns, timeline.epoch_host_ns) + lead_ns as f64
+        - last_frame as f64 * (1e9 / 48_000.0);
+    age.is_finite().then_some(age.max(0.0) as u64)
 }
 
 struct Playout {
@@ -101,7 +159,8 @@ struct Playout {
     last_concealed: usize,
     last_waiting: usize,
     last_frames: usize,
-    late_frames: LateFrames,
+    late_frames: RecentSamples,
+    timing: ReceiveTiming,
 }
 impl Default for Playout {
     fn default() -> Self {
@@ -128,7 +187,8 @@ impl Default for Playout {
             last_concealed: 0,
             last_waiting: 0,
             last_frames: 0,
-            late_frames: LateFrames::default(),
+            late_frames: RecentSamples::default(),
+            timing: ReceiveTiming::default(),
         }
     }
 }
@@ -207,6 +267,8 @@ impl Receiver {
         }
         let mut clock_due = Instant::now();
         let mut readiness_due = Instant::now();
+        let mut poll_finished = Instant::now();
+        let mut last_audio_ns = None;
         while !self.stop.load(Ordering::Relaxed) {
             if !session.readiness_acknowledged() && Instant::now() >= readiness_due {
                 let readiness = self
@@ -226,12 +288,26 @@ impl Receiver {
                 }
                 clock_due = Instant::now() + Duration::from_millis(100);
             }
-            match session
+            let between_polls = elapsed_ns(poll_finished);
+            let poll_started = Instant::now();
+            let event = session
                 .poll(Duration::from_millis(5))
-                .map_err(|e| e.to_string())?
-            {
+                .map_err(|e| e.to_string())?;
+            let poll_overrun = elapsed_ns(poll_started).saturating_sub(5_000_000);
+            poll_finished = Instant::now();
+            match event {
                 Some(Event::Audio(packet)) => {
+                    let received_ns = monotonic_ns().map_err(|e| e.to_string())?;
+                    let lock_started = Instant::now();
                     let mut state = self.state.lock().map_err(|_| "Playback state failed")?;
+                    state.timing.network_lock.record(elapsed_ns(lock_started));
+                    if let Some(previous) = last_audio_ns {
+                        state
+                            .timing
+                            .audio_gap
+                            .record(received_ns.saturating_sub(previous));
+                    }
+                    last_audio_ns = Some(received_ns);
                     let last_frame = packet.first_frame()
                         + roomsync_core::protocol::FRAMES_PER_PACKET as u64
                         - 1;
@@ -240,6 +316,19 @@ impl Receiver {
                             .latest_source_frame
                             .map_or(last_frame, |old| old.max(last_frame)),
                     );
+                    if let (Some(clock), Some(timeline), Some(lead)) =
+                        (state.sync.model(), state.timeline, state.negotiated_lead_ns)
+                    {
+                        if let Some(age) = source_age_ns(
+                            clock,
+                            timeline,
+                            lead,
+                            last_frame,
+                            monotonic_ns().map_err(|e| e.to_string())?,
+                        ) {
+                            state.timing.source_age.record(age);
+                        }
+                    }
                     state.input_peak = packet
                         .samples()
                         .iter()
@@ -285,6 +374,8 @@ impl Receiver {
             }
             if let Ok(mut state) = self.state.lock() {
                 let stats = session.stats();
+                state.timing.poll_overrun.record(poll_overrun);
+                state.timing.between_polls.record(between_polls);
                 state.rejected = stats.authentication_rejected
                     + stats.replay_rejected
                     + stats.malformed_rejected
@@ -333,7 +424,10 @@ impl Receiver {
         if self.stop.load(Ordering::Relaxed) {
             return Ok(());
         }
+        let lock_started = Instant::now();
         let mut state = self.state.lock().map_err(|_| "Playback state failed")?;
+        state.timing.render_lock.record(elapsed_ns(lock_started));
+        let render_started = Instant::now();
         if let Some(e) = &state.error {
             return Err(e.clone());
         }
@@ -359,6 +453,7 @@ impl Receiver {
         state.concealed += report.concealed_frames as u64;
         state.waiting += report.waiting_frames as u64;
         state.realignments += u64::from(report.realigned);
+        state.timing.render_work.record(elapsed_ns(render_started));
         Ok(())
     }
     fn phase(&self) -> i32 {
@@ -442,7 +537,7 @@ impl Receiver {
                 r.source_cursor().map_or_else(|| "not started".into(), |v| format!("{v:.0}")),
                 s.latest_source_frame.map_or_else(|| "none".into(), |v| v.to_string()))
         });
-        format!(
+        let text = format!(
             "{}\n{}\nPackets: {} · Transport rejected: {}\n{}\nLate-packet lag: p95 {} frames (last {}), max {} frames\nConcealed: {} frames · Realignments: {}\nLatest block missing: {}/{} · Waiting: {}\nPCM peak received: {:.4} · Rendered: {:.4}\nNext-write DAC horizon: {:.1} ms · Calibrated max: {} · Shared lead: {}\n{}",
             health,
             s.endpoint,
@@ -467,7 +562,12 @@ impl Receiver {
             s.negotiated_lead_ns
                 .map_or_else(|| "waiting".into(), |v| format!("{:.1} ms", v as f64 / 1e6)),
             clock
-        )
+        );
+        // Snapshot bounded numbers before sorting/formatting the extra timing
+        // diagnostics. Copy-details must not add long work to the render mutex.
+        let timing = s.timing.clone();
+        drop(s);
+        format!("{text}\n{}", timing.describe())
     }
 }
 
@@ -669,7 +769,7 @@ mod tests {
     }
     #[test]
     fn late_frame_diagnostics_are_bounded_and_explicit() {
-        let mut samples = LateFrames::default();
+        let mut samples = RecentSamples::default();
         assert_eq!(samples.p95(), 0);
         for n in 1..=100 {
             samples.record(n);
@@ -682,6 +782,85 @@ mod tests {
         assert_eq!(samples.count, 256);
         assert_eq!(samples.p95(), 20);
         assert_eq!(samples.maximum, 100);
+    }
+    #[test]
+    fn estimated_source_age_uses_common_schedule_not_dac_queue() {
+        use roomsync_core::clock::{ClockExchange, ClockModel};
+        let timeline = SessionInfo {
+            session_id: 1,
+            epoch_host_ns: 10_000_000_000,
+        };
+        // Frame 4800 was scheduled at 10s - 130ms + 100ms = 9.970s.
+        assert_eq!(
+            source_age_ns(
+                ClockModel::identity(),
+                timeline,
+                130_000_000,
+                4_800,
+                10_025_000_000
+            ),
+            Some(55_000_000)
+        );
+        // A stalled receiver, host, or network all grow this age. It cannot
+        // identify any of them alone and does not incorporate a DAC horizon.
+        assert_eq!(
+            source_age_ns(
+                ClockModel::identity(),
+                timeline,
+                130_000_000,
+                4_800,
+                10_145_000_000
+            ),
+            Some(175_000_000)
+        );
+        let mut sync = ClockSynchronizer::new();
+        for i in 0..16 {
+            let t = 1_000_000_000 + i * 100_000_000;
+            sync.observe(ClockExchange {
+                local_send_ns: t,
+                host_receive_ns: t + 500_000,
+                host_send_ns: t + 600_000,
+                local_receive_ns: t + 1_100_000,
+            })
+            .unwrap();
+        }
+        assert!(
+            source_age_ns(
+                sync.model().unwrap(),
+                timeline,
+                130_000_000,
+                4_800,
+                10_145_000_000
+            )
+            .is_none(),
+            "Expired clock cannot measure source age"
+        );
+    }
+    #[test]
+    fn diagnostic_histograms_do_not_mix_poll_and_mutex_delays() {
+        let mut timing = ReceiveTiming::default();
+        assert!(
+            timing
+                .describe()
+                .contains("Estimated source age: not measured")
+        );
+        timing.poll_overrun.record(120_000_000);
+        timing.network_lock.record(5_000);
+        timing.audio_gap.record(150_000_000);
+        let snapshot = timing.clone();
+        for _ in 0..300 {
+            timing.poll_overrun.record(0);
+        }
+        assert_eq!(timing.poll_overrun.p95(), 0);
+        assert_eq!(timing.poll_overrun.maximum, 120_000_000);
+        assert_eq!(snapshot.poll_overrun.p95(), 120_000_000);
+        assert_eq!(snapshot.network_lock.maximum, 5_000);
+        assert_eq!(snapshot.render_lock.maximum, 0);
+        assert!(
+            snapshot
+                .describe()
+                .contains("inferred from the shared schedule")
+        );
     }
     #[test]
     fn readiness_is_measured_once_before_timeline_and_bounded() {

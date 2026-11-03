@@ -37,7 +37,8 @@ function help(version) {
     'create a private setup code and choose Start listening in the control page.\n' +
     'Default capture does not delay or mute original host audio. Optional synced\n' +
     'Windows speakers require explicit virtual routing. This unsigned preview\n' +
-    'still needs physical audio/synchronization validation.\n';
+    'still needs physical audio/synchronization validation. Timing diagnostics\n' +
+    'do not prove the physical cause of silence or cutouts.\n';
 }
 
 function runNative(executable, args, options) {

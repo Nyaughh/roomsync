@@ -14,6 +14,19 @@ cargo build --release --manifest-path adapters/transport/Cargo.toml
 
 The integration test launches two actual processes, performs pairing and clock synchronization, and compares 64 received PCM packets byte-for-byte with the input. Unit tests exercise packet loss/reordering, tampering, source verification, replay, wrong key/session, malformed/oversized datagrams, idle timeout, confirmation retries, clock backpressure, and explicit end-of-stream counts.
 
+### Two-receiver dispatch diagnostic
+
+```sh
+cargo run --release --manifest-path adapters/transport/Cargo.toml --example peer_dispatch -- 0
+cargo run --release --manifest-path adapters/transport/Cargo.toml --example peer_dispatch -- 120
+```
+
+This localhost-only probe sends 800 authenticated audio packets to each of two independently serviced receivers. It copies the desktop scheduling policy: four source packets every 10 ms, a 128-packet bounded queue per peer, at most 64 sends before each 2 ms transport poll. Its queues are standard bounded channels, not the desktop's lock-free `ArrayQueue`; it does not benchmark that queue implementation or exercise audio hardware. The argument injects one 0..=200 ms worker stall into receiver 2's **sender**, not the network. It reports queue residence, send-call wall time, worker gaps, send-batch size, and receiver arrival gaps. Temporary pairing keys are never printed or saved.
+
+For example, one cloud Linux run delivered every packet to both peers. The baseline maximum queue residence was 10–12 ms. A 120 ms injected stall produced a 52-packet burst and 124 ms maximum queue residence on peer 2; a 200 ms stall produced a 64-packet burst and 209 ms maximum queue residence. These numbers vary with the machine and load. They establish that late audio can accumulate and arrive in a burst without queue overflow or packet loss, not that this caused any particular phone's cutouts. There is no timing pass/fail threshold in this probe.
+
+Desktop peers have independent queues, sockets and workers. Capture fanout is nonblocking, and queue overflow fails the session rather than dropping silently. There is no intentional peer-index priority. An OS scheduler stall or a blocked send can nevertheless delay an individual worker. [Windows documents that blocking UDP `sendto` can wait for transmit-buffer space](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-sendto); neither that condition nor Windows receive-timeout granularity is established by this Linux probe. Use per-peer enqueue-to-send age, send-call time, worker gaps and observed queue depth alongside receiver diagnostics to distinguish host dispatch from downstream delay. This diagnostic changes no transport behavior or wire format.
+
 ## Two-machine file smoke test
 
 Create a key outside the repository and transfer the file privately to the other designated machine. The command refuses to overwrite existing files. On Unix it creates private mode-0600 files and refuses permissive key-file permissions. On Windows use a private user directory with appropriate ACLs. The CLI does not inspect or harden Windows ACLs; secure Windows key storage is a pre-release gate. Do not put the key in command-line arguments, screenshots, logs, chat, or version control.

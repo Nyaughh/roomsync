@@ -1,6 +1,6 @@
 {
   "name": "roomsync",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "RoomSync Windows host preview: start a local control page for private audio sharing",
   "license": "UNLICENSED",

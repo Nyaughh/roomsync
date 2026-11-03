@@ -148,7 +148,11 @@ function showStatus(state) {
     : '';
   text('metrics', metrics);
   $('metrics').hidden = !metrics;
-  const peerText = state.peers.map(peer => `Device ${peer.index + 1}: ${peer.message}`);
+  const peerText = state.peers.map(peer => {
+    const d = peer.dispatch;
+    const dispatch = d ? ` · Host sent ${d.packets_sent.toLocaleString()} packets; maximums this session: queue wait ${d.queue_wait_max_ms.toFixed(1)} ms, send call ${d.send_call_max_ms.toFixed(1)} ms, worker gap ${d.worker_gap_max_ms.toFixed(1)} ms; observed queue ${d.observed_queue_high_water}/128. These are host timings, not Wi-Fi or speaker measurements.` : '';
+    return `Device ${peer.index + 1}: ${peer.message}${dispatch}`;
+  });
   if (JSON.stringify(peerText) !== $('peers').dataset.content) {
     $('peers').replaceChildren(...peerText.map(message => {
       const li = document.createElement('li');

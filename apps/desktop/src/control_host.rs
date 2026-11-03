@@ -1,5 +1,5 @@
 //! Authenticated peer admission and shared timeline orchestration for local controls.
-use crate::control::{Plan, SharedState, update};
+use crate::control::{DispatchState, Plan, SharedState, update};
 use crate::{Result, clock};
 use crossbeam_queue::ArrayQueue;
 use roomsync_core::{AudioPacket, device_clock::DeviceClockEstimator};
@@ -20,6 +20,36 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+// Metadata remains local: audio bytes, deadlines and wire format are unchanged.
+struct QueuedAudio {
+    packet: AudioPacket,
+    enqueued: Instant,
+}
+
+#[derive(Default)]
+struct DispatchMetrics {
+    state: DispatchState,
+}
+impl DispatchMetrics {
+    fn gap(&mut self, elapsed: Duration) {
+        if self.state.packets_sent > 0 {
+            self.state.worker_gap_max_ms = self
+                .state
+                .worker_gap_max_ms
+                .max(elapsed.as_secs_f64() * 1e3);
+        }
+    }
+    fn record_call(&mut self, queued: Duration, call: Duration, observed_depth: usize, sent: bool) {
+        self.state.packets_sent = self.state.packets_sent.saturating_add(u64::from(sent));
+        self.state.queue_wait_max_ms = self.state.queue_wait_max_ms.max(queued.as_secs_f64() * 1e3);
+        self.state.send_call_max_ms = self.state.send_call_max_ms.max(call.as_secs_f64() * 1e3);
+        self.state.observed_queue_high_water = self
+            .state
+            .observed_queue_high_water
+            .max(observed_depth.clamp(1, 128));
+    }
+}
 
 pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()> {
     qpc_now_ns()?;
@@ -58,7 +88,7 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
     let mut queues = Vec::with_capacity(count);
     let mut workers = Vec::with_capacity(count);
     for (index, listener) in listeners.into_iter().enumerate() {
-        let queue = Arc::new(ArrayQueue::<AudioPacket>::new(128));
+        let queue = Arc::new(ArrayQueue::<QueuedAudio>::new(128));
         queues.push(queue.clone());
         let stop = cancel.clone();
         let timeline = shared_timeline.clone();
@@ -71,6 +101,7 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
             thread::Builder::new()
                 .name(format!("roomsync-listener-{index}"))
                 .spawn(move || -> std::result::Result<(), String> {
+                    let mut dispatch = DispatchMetrics::default();
                     let operation = (|| -> std::result::Result<(), String> {
                         let mut session = match listener.accept_waiting(clock(), &stop, |progress| {
                             update(&ui, |s| {
@@ -96,7 +127,12 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                         let mut heartbeat = Instant::now();
                         let mut timeline_retry = Instant::now() - Duration::from_secs(1);
                         let mut calibrated = None;
+                        let mut previous_loop = Instant::now();
+                        let mut dispatch_update = Instant::now();
                         while !stop.load(Ordering::Acquire) {
+                            let loop_now = Instant::now();
+                            dispatch.gap(loop_now.saturating_duration_since(previous_loop));
+                            previous_loop = loop_now;
                             let target = *timeline.lock().map_err(|_| "timeline state unavailable")?;
                             if let Some((info, lead_ns)) = target {
                                 if !peer_ack.load(Ordering::Acquire) && timeline_retry.elapsed() >= Duration::from_millis(100) {
@@ -105,8 +141,18 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                                 }
                             }
                             for _ in 0..64 {
-                                let Some(packet) = queue.pop() else { break; };
-                                session.send_audio(&packet).map_err(|e| e.to_string())?;
+                                let depth = queue.len();
+                                let Some(audio) = queue.pop() else { break; };
+                                let sending = Instant::now();
+                                let result = session.send_audio(&audio.packet);
+                                dispatch.record_call(sending.saturating_duration_since(audio.enqueued), sending.elapsed(), depth, result.is_ok());
+                                result.map_err(|e| e.to_string())?;
+                            }
+                            if dispatch.state.packets_sent > 0 && dispatch_update.elapsed() >= Duration::from_millis(500) {
+                                update(&ui, |s| {
+                                    if let Some(peer) = s.peers.get_mut(index) { peer.dispatch = Some(dispatch.state.clone()); }
+                                });
+                                dispatch_update = Instant::now();
                             }
                             match session.poll(Duration::from_millis(2)).map_err(|e| e.to_string())? {
                                 Some(Event::ReceiverReady(value)) => {
@@ -147,6 +193,13 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                         let _ = session.close();
                         Ok(())
                     })();
+                    // Preserve the final partial interval, including a failed
+                    // send's elapsed time, for Stop/error diagnostics.
+                    if dispatch.state.packets_sent > 0 || dispatch.state.send_call_max_ms > 0.0 {
+                        update(&ui, |s| {
+                            if let Some(peer) = s.peers.get_mut(index) { peer.dispatch = Some(dispatch.state.clone()); }
+                        });
+                    }
                     if let Err(error) = &operation { let _ = failures.try_send(error.clone()); }
                     operation
                 })?,
@@ -321,8 +374,9 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                         source_peak = audio.samples().iter().fold(source_peak, |peak, sample| {
                             peak.max(sample.unsigned_abs() as f32 / 32768.0)
                         });
+                        let enqueued = Instant::now();
                         for queue in &queues {
-                            queue.push(audio.clone()).map_err(|_| "Network queue overflow; session stopped instead of accumulating delay")?;
+                            queue.push(QueuedAudio { packet: audio.clone(), enqueued }).map_err(|_| "Network queue overflow; session stopped instead of accumulating delay")?;
                         }
                         if let Some(local) = &local_output { local.push(audio).map_err(|_| "Local speaker queue overflow or timeline failure; restart the group")?; }
                         Ok(())
@@ -389,4 +443,55 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_diagnostics_are_bounded_independent_and_do_not_count_warmup_gaps() {
+        let mut a = DispatchMetrics::default();
+        let mut b = DispatchMetrics::default();
+        a.gap(Duration::from_secs(5));
+        assert_eq!(a.state.worker_gap_max_ms, 0.0);
+        a.record_call(
+            Duration::from_micros(500),
+            Duration::from_micros(100),
+            2,
+            true,
+        );
+        b.record_call(
+            Duration::from_millis(120),
+            Duration::from_millis(80),
+            48,
+            true,
+        );
+        a.gap(Duration::from_millis(3));
+        b.gap(Duration::from_millis(125));
+        b.record_call(Duration::from_millis(2), Duration::ZERO, usize::MAX, true);
+        assert_eq!(a.state.queue_wait_max_ms, 0.5);
+        assert_eq!(a.state.send_call_max_ms, 0.1);
+        assert_eq!(a.state.worker_gap_max_ms, 3.0);
+        assert_eq!(a.state.observed_queue_high_water, 2);
+        assert_eq!(b.state.queue_wait_max_ms, 120.0);
+        assert_eq!(b.state.send_call_max_ms, 80.0);
+        assert_eq!(b.state.worker_gap_max_ms, 125.0);
+        assert_eq!(b.state.observed_queue_high_water, 128);
+        assert_eq!(b.state.packets_sent, 2);
+        b.record_call(
+            Duration::from_millis(3),
+            Duration::from_millis(180),
+            3,
+            false,
+        );
+        assert_eq!(
+            b.state.packets_sent, 2,
+            "Failed sends are timed but not counted as sent"
+        );
+        assert_eq!(b.state.send_call_max_ms, 180.0);
+        b.state.packets_sent = u64::MAX;
+        b.record_call(Duration::ZERO, Duration::ZERO, 0, true);
+        assert_eq!(b.state.packets_sent, u64::MAX);
+    }
 }

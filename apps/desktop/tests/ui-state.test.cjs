@@ -281,3 +281,24 @@ test('local saved settings restore only their saved explicit acknowledgment', as
     assert.equal(e.routeReminder.hidden, false); assert.equal(e.secret.hidden, true);
   }
 });
+
+test('per-peer host dispatch timings are labeled, isolated and never presented as network latency', async () => {
+  const model = app(); const e = model.elements; await model.settle();
+  await e.prepare.onclick();
+  model.update({ phase: 'streaming', receiver_count: 2, peers: [
+    { index: 0, message: 'Connected', dispatch: { packets_sent: 800, queue_wait_max_ms: 1.25, send_call_max_ms: .125, worker_gap_max_ms: 3, observed_queue_high_water: 2 } },
+    { index: 1, message: 'Connected', dispatch: { packets_sent: 790, queue_wait_max_ms: 124.5, send_call_max_ms: 81.25, worker_gap_max_ms: 130, observed_queue_high_water: 52 } },
+  ] });
+  await model.refresh();
+  assert.equal(e.peers.children.length, 2);
+  assert.match(e.peers.children[0].textContent, /queue wait 1.3 ms/);
+  assert.doesNotMatch(e.peers.children[0].textContent, /124.5/);
+  assert.match(e.peers.children[1].textContent, /queue wait 124.5 ms/);
+  assert.match(e.peers.children[1].textContent, /send call 81.3 ms/);
+  assert.match(e.peers.children[1].textContent, /observed queue 52\/128/);
+  assert.match(e.peers.children[1].textContent, /not Wi-Fi or speaker measurements/);
+  model.update({ peers: [{ index: 0, message: 'Opening listener', dispatch: null }] });
+  await model.refresh();
+  assert.doesNotMatch(e.peers.children[0].textContent, /Host sent|maximums/);
+  assert.equal(e.payload.value, '');
+});

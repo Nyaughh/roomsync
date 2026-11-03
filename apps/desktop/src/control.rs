@@ -49,10 +49,19 @@ pub(crate) struct Plan {
     pub settings: Settings,
     pub key: Zeroizing<String>,
 }
+#[derive(Clone, Default, Serialize)]
+pub(crate) struct DispatchState {
+    pub packets_sent: u64,
+    pub queue_wait_max_ms: f64,
+    pub send_call_max_ms: f64,
+    pub worker_gap_max_ms: f64,
+    pub observed_queue_high_water: usize,
+}
 #[derive(Clone, Serialize)]
 pub(crate) struct PeerState {
     pub index: usize,
     pub message: String,
+    pub dispatch: Option<DispatchState>,
 }
 #[derive(Clone, Serialize)]
 pub(crate) struct PublicState {
@@ -347,6 +356,7 @@ impl Controller {
                 .map(|index| PeerState {
                     index,
                     message: "Not listening yet".into(),
+                    dispatch: None,
                 })
                 .collect();
         });
@@ -434,6 +444,7 @@ impl Controller {
             s.local_too_far_packets = 0;
             s.local_output_peak = 0.0;
             for peer in &mut s.peers {
+                peer.dispatch = None;
                 peer.message = "Opening listener".into();
             }
         });

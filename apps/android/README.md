@@ -1,17 +1,21 @@
-# RoomSync Android receiver 0.1.4
+# RoomSync Android receiver 0.1.6
 
 A minimal Android 8.0+ receiver using the shared Rust audio/timing core and
 Noise-PSK encrypted UDP. The APK supports **arm64-v8a** and **x86_64**.
 32-bit-only ARM phones are not supported by this preview.
 
-**Installation warning:** the original preview signing key is unavailable. This
-0.1.4 build uses a new debug certificate and **cannot update an existing install**.
-To install it, uninstall the old RoomSync app first, which removes its app data,
-then install this APK and scan the Windows QR code again. Nothing is uninstalled
-automatically. The package is versionCode 5.
+**Installing this update:** 0.1.6 uses the same signing certificate as the
+previously distributed 0.1.4 preview, so it can install over that version without
+uninstalling. The package is versionCode 6. Pre-0.1.4 previews used a different,
+unavailable signing key: those must be uninstalled first, removing their app
+data, before installing this APK. Nothing is uninstalled automatically.
 
-Windows 0.1.2 and newer remain protocol-compatible. Use Windows 0.1.4 for the new
-measured-latency budget improvements. The encrypted revision 3 protocol is unchanged.
+This is a diagnostic update, not a verified cure for audio cutouts. It adds
+bounded receive/processing timing counters without changing Android's playback
+queue, clocks or shared timeline. Use Windows 0.1.6 for complementary host timing
+counters. Windows 0.1.2 and newer remain compatible; the encrypted revision 3
+protocol is unchanged. Windows 0.1.4 and newer include the measured-latency budget
+improvements.
 
 ## First connection
 
@@ -113,6 +117,17 @@ Status contains actual counters and estimates. Network clock uncertainty is **no
 measured acoustic synchronization error**. Bluetooth, device DSP and acoustic
 propagation add unmeasured delay. Prefer built-in/wired speakers for initial tests.
 Microphone transport, call handling and video lip-sync remain out of scope.
+
+Connection details also records bounded receive-timing histories (p95 of the last
+256 observations per metric and session maximum including startup): audio receive gaps, socket polling beyond
+its requested 5 ms wait, work between polls, audio-insertion/render state-lock waits, and
+render work. Estimated source age is calculated from the shared source schedule,
+not a send timestamp: capture batching, host dispatch, transit, socket backlog and
+receiver scheduling can all contribute. These counters diagnose stalls without
+changing the clock, queue size or common playback timeline. Low clock uncertainty
+and zero AudioTrack underruns do not guarantee complete audio: missing packets
+are concealed on the continuing timeline, and high-RTT clock samples can be
+rejected while a previously valid clock estimate remains usable.
 
 Permissions: Internet (LAN sockets), foreground media playback, notifications,
 playback wake lock, and optional camera for QR scanning. No microphone, contacts,

@@ -1,13 +1,20 @@
 # RoomSync npm launcher (unpublished preview)
 
-A small, dependency-free launcher for the **Windows x64 RoomSync 0.1.5 host**.
+A small, dependency-free launcher for the **Windows x64 RoomSync 0.1.6 host**.
 It bundles the native executable and opens its local setup page. No Rust compiler,
 extra runtime download, install script or paid service is needed. The launcher
 does not install a virtual driver; optional synchronized Windows speakers require
 one to be installed and routed separately by the user.
 Requires Node.js 20+ and Windows 10 version 1703 or newer with x64 Node.js.
-The Android receiver app is still installed separately. Android **0.1.4** remains
-wire-compatible with Windows 0.1.5; no Android update is needed for this feature.
+The Android receiver app is still installed separately. Use Android **0.1.6** for
+the matching receive-side diagnostics; earlier revision-3 receivers remain
+wire-compatible.
+
+**0.1.6 is a diagnostic update, not a verified fix for silence or cutouts.** It
+adds bounded host queue/send timing counters to Connection details. They help
+separate host dispatch delay from downstream delay, but do not measure Wi-Fi
+transit or prove the physical cause. The shared timeline and playback buffering
+are unchanged by this update.
 
 **This package has not been published to npm.** Do not run plain `npx roomsync`
 until a release and its owner are confirmed; that command resolves a registry
@@ -17,14 +24,14 @@ publication/name/license decision. Third-party notices are included separately.
 
 ## Use the preview tarball
 
-After obtaining the verified `roomsync-0.1.5.tgz`, in **Windows PowerShell**:
+After obtaining the verified `roomsync-0.1.6.tgz`, in **Windows PowerShell**:
 
 ```powershell
 # Run directly from the local tarball, without a global installation:
-npx --package .\roomsync-0.1.5.tgz roomsync start
+npx --package .\roomsync-0.1.6.tgz roomsync start
 
 # Or install the local package, then use the short command:
-npm install --global .\roomsync-0.1.5.tgz
+npm install --global .\roomsync-0.1.6.tgz
 roomsync start
 ```
 
