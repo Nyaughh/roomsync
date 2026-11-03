@@ -1,4 +1,5 @@
-mod wizard;
+mod control;
+mod control_host;
 use crossbeam_queue::ArrayQueue;
 use roomsync_core::{
     AudioPacket,
@@ -29,7 +30,7 @@ use std::{
 use zeroize::Zeroizing;
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
-const HELP: &str = "RoomSync desktop prototype (Windows 10 1703+)\n\n  roomsync-desktop list-devices\n  roomsync-desktop generate-key PRIVATE_KEY_FILE\n  roomsync-desktop host --key FILE --bind IP:PORT --peer IP:PORT [--peer IP:PORT ...] [--latency-ms 100] [--capture-device ID]\n  roomsync-desktop receive --key FILE --bind IP:PORT --host IP:PORT [--channel stereo|left|right|mono] [--output-device ID] [--output-delay-ms 0]\n\nHost uses consecutive local ports, one per listed peer (maximum 8). Configure each receiver's host port accordingly. Share the generated key privately, never in a public repository. Ctrl+C stops audio. This unsigned prototype has not been hardware-calibrated; no zero-latency or measured synchronization promise. Windows system playback only; no microphone capture. The host's original playback is NOT delayed: use an inaudible output/headphones to prevent echo. No device settings are changed.";
+const HELP: &str = "RoomSync desktop preview 0.1.1 (Windows 10 1703+)\n\n  roomsync-desktop web\n  roomsync-desktop web-headless\n  roomsync-desktop list-devices\n  roomsync-desktop generate-key PRIVATE_KEY_FILE\n  roomsync-desktop host --key FILE --bind IP:PORT --peer IP:PORT [--peer IP:PORT ...] [--latency-ms 100] [--capture-device ID]\n  roomsync-desktop receive --key FILE --bind IP:PORT --host IP:PORT [--channel stereo|left|right|mono] [--output-device ID] [--output-delay-ms 0]\n\nHost uses consecutive local ports, one per listed peer (maximum 8). Configure each receiver's host port accordingly. Share the generated key privately, never in a public repository. Ctrl+C stops audio. This unsigned prototype has not been hardware-calibrated; no zero-latency or measured synchronization promise. Windows system playback only; no microphone capture. The host's original playback is NOT delayed: use an inaudible output/headphones to prevent echo. No device settings are changed.";
 
 fn main() {
     if let Err(error) = run() {
@@ -38,9 +39,18 @@ fn main() {
     }
 }
 fn run() -> Result<()> {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|a| a == "wizard") || (cfg!(windows) && args.is_empty()) {
-        args = wizard::arguments()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if (cfg!(windows) && args.is_empty())
+        || args.first().is_some_and(|a| {
+            a == "web" || a == "web-headless" || a == "web-ui-test" || a == "wizard"
+        })
+    {
+        return control::run(
+            !args
+                .first()
+                .is_some_and(|a| a == "web-headless" || a == "web-ui-test"),
+            args.first().is_some_and(|a| a == "web-ui-test"),
+        );
     }
     if args.is_empty() || matches!(args[0].as_str(), "help" | "--help" | "-h") {
         println!("{HELP}");

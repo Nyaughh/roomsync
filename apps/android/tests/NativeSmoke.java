@@ -11,6 +11,7 @@ public final class NativeSmoke {
         long handle=NativeReceiver.start("127.0.0.1",45450,localPort,key,0);
         try {
             check(NativeReceiver.phase(handle)==1);
+            check(!NativeReceiver.status(handle).contains(new String(key)));
             float[] output=new float[240];Arrays.fill(output,1f);
             NativeReceiver.render(handle,System.nanoTime(),120,output);for(float f:output)check(f==0f);
             rejected=false;try{NativeReceiver.render(handle,System.nanoTime(),961,new float[1922]);}catch(IllegalStateException e){rejected=true;}check(rejected);

@@ -3,3 +3,6 @@
 /local.properties
 *.keystore
 *.jks
+/deps/*.jar
+/deps/*.jar.sha1
+/deps/*.download

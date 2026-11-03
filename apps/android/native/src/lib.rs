@@ -9,9 +9,11 @@ use roomsync_core::{
     clock::ClockSynchronizer,
     render::{ChannelMap, Renderer},
 };
-use roomsync_transport::{Config, Endpoint, Event, MonotonicClock, PairingKey};
+use roomsync_transport::{
+    Config, Endpoint, Event, MonotonicClock, PairingKey, PairingProgress, SessionInfo,
+};
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, UdpSocket},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -42,6 +44,10 @@ fn monotonic_ns() -> roomsync_transport::Result<u64> {
 }
 
 struct Playout {
+    paired: bool,
+    timeline: Option<SessionInfo>,
+    progress: PairingProgress,
+    endpoint: String,
     renderer: Option<Renderer>,
     sync: ClockSynchronizer,
     error: Option<String>,
@@ -55,6 +61,10 @@ struct Playout {
 impl Default for Playout {
     fn default() -> Self {
         Self {
+            paired: false,
+            timeline: None,
+            progress: PairingProgress::default(),
+            endpoint: String::new(),
             renderer: None,
             sync: ClockSynchronizer::new(),
             error: None,
@@ -92,9 +102,25 @@ impl Receiver {
         );
         let endpoint =
             Endpoint::bind(local, peer, key, Config::default()).map_err(|e| e.to_string())?;
+        // UDP connect chooses a route without transmitting any datagrams. This
+        // diagnostic does not replace the real receiver's fixed source port.
+        let route_ip = UdpSocket::bind(SocketAddr::new(local.ip(), 0))
+            .and_then(|s| {
+                s.connect(peer)?;
+                s.local_addr()
+            })
+            .ok()
+            .map(|address| address.ip());
+        let endpoint_text = format!(
+            "Host: {peer}\nPhone UDP bind: {local}\nSelected route IP: {}",
+            route_ip.map_or_else(|| "unavailable".into(), |ip| ip.to_string())
+        );
         let receiver = Arc::new(Self {
             stop: AtomicBool::new(false),
-            state: Mutex::new(Playout::default()),
+            state: Mutex::new(Playout {
+                endpoint: endpoint_text,
+                ..Playout::default()
+            }),
             worker: Mutex::new(None),
         });
         let cloned = receiver.clone();
@@ -113,14 +139,16 @@ impl Receiver {
     }
     fn run(&self, endpoint: Endpoint, map: ChannelMap) -> Result<(), String> {
         let clock = MonotonicClock::from_source(monotonic_ns);
-        let mut session = endpoint.join(clock).map_err(|e| e.to_string())?;
-        let info = session.info();
+        let mut session = endpoint
+            .join_cancellable(clock, &self.stop, |progress| {
+                if let Ok(mut state) = self.state.lock() {
+                    state.progress = progress;
+                }
+            })
+            .map_err(|e| e.to_string())?;
         {
             let mut state = self.state.lock().map_err(|_| "Playback state failed")?;
-            state.renderer = Some(
-                Renderer::new(info.session_id, info.epoch_host_ns, map)
-                    .map_err(|e| format!("Renderer: {e:?}"))?,
-            );
+            state.paired = true;
         }
         let mut clock_due = Instant::now();
         while !self.stop.load(Ordering::Relaxed) {
@@ -141,6 +169,16 @@ impl Receiver {
                         renderer.push(packet);
                     }
                     state.packets += 1;
+                }
+                Some(Event::Timeline(info)) => {
+                    let mut state = self.state.lock().map_err(|_| "Playback state failed")?;
+                    if state.timeline != Some(info) {
+                        state.renderer = Some(
+                            Renderer::new(info.session_id, info.epoch_host_ns, map)
+                                .map_err(|e| format!("Renderer: {e:?}"))?,
+                        );
+                        state.timeline = Some(info);
+                    }
                 }
                 Some(Event::ClockSample(sample)) => {
                     if let Ok(mut state) = self.state.lock() {
@@ -216,10 +254,14 @@ impl Receiver {
         if self.stop.load(Ordering::Relaxed) {
             return 0;
         }
-        if state
-            .sync
-            .model()
-            .is_some_and(|m| m.is_locked() && monotonic_ns().is_ok_and(|n| m.is_fresh_at(n)))
+        if state.paired && state.renderer.is_none() {
+            return 4;
+        }
+        if state.renderer.is_some()
+            && state
+                .sync
+                .model()
+                .is_some_and(|m| m.is_locked() && monotonic_ns().is_ok_and(|n| m.is_fresh_at(n)))
         {
             3
         } else if state.renderer.is_some() {
@@ -233,7 +275,7 @@ impl Receiver {
             return "Playback state failed".into();
         };
         if let Some(e) = &s.error {
-            return format!("Stopped: {e}");
+            return format!("Stopped: {e}\n{}", s.endpoint);
         }
         let clock = match s.sync.model() {
             Some(m) if m.is_locked() && monotonic_ns().is_ok_and(|n| m.is_fresh_at(n)) => format!(
@@ -243,13 +285,32 @@ impl Receiver {
             ),
             _ => "measuring host clock".into(),
         };
+        if !s.paired {
+            return format!(
+                "{}\n{}\nWaiting: {} s · Attempts: {}\nHello sent: {} · Verified replies: {} · Confirmations sent: {}\nUDP received: {} · Wrong source: {} · Authentication rejected: {}\nProtocol mismatch: {} · Malformed: {} · Peer unavailable: {}\nKeep Windows RoomSync open. Stop cancels immediately.",
+                s.progress.description(),
+                s.endpoint,
+                s.progress.elapsed.as_secs(),
+                s.progress.attempts,
+                s.progress.hello_sent,
+                s.progress.welcomes_authenticated,
+                s.progress.confirmations_sent,
+                s.progress.datagrams_received,
+                s.progress.wrong_source,
+                s.progress.authentication_rejected,
+                s.progress.protocol_mismatch,
+                s.progress.malformed,
+                s.progress.peer_unreachable
+            );
+        }
         format!(
-            "{}\nPackets: {} · Rejected: {}\nConcealed: {} frames · Realignments: {}\n{}",
+            "{}\n{}\nPackets: {} · Rejected: {}\nConcealed: {} frames · Realignments: {}\n{}",
             if s.renderer.is_some() {
                 "Encrypted session established"
             } else {
-                "Pairing with host…"
+                "Paired securely. Waiting for the Windows playback timeline."
             },
+            s.endpoint,
             s.packets,
             s.rejected,
             s.concealed,
@@ -451,22 +512,48 @@ mod tests {
         use std::net::UdpSocket;
         let host_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         let host_addr = host_socket.local_addr().unwrap();
+        drop(host_socket);
         let port_reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
         let receiver_addr = port_reservation.local_addr().unwrap();
         drop(port_reservation);
         let key = PairingKey::generate().unwrap();
         let key_copy = PairingKey::from_hex(&key.to_hex_for_storage()).unwrap();
-        let host =
-            Endpoint::from_socket(host_socket, receiver_addr, key, Config::default()).unwrap();
+        let host = Endpoint::bind_listener(host_addr, key, Config::default()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let sender = thread::spawn(move || {
             let mut session = host
-                .accept(
+                .accept_waiting(
                     MonotonicClock::from_source(monotonic_ns),
-                    Duration::from_secs(2),
+                    &AtomicBool::new(false),
+                    |_| {},
                 )
                 .unwrap();
-            let info = session.info();
+            // A second phone may take a while. Stay alive without any playback
+            // epoch, even beyond the normal authenticated idle timeout.
+            let wait_until = Instant::now() + Duration::from_millis(3_500);
+            let mut heartbeat = Instant::now();
+            while Instant::now() < wait_until {
+                session.poll(Duration::from_millis(5)).unwrap();
+                if heartbeat.elapsed() >= Duration::from_millis(500) {
+                    session.heartbeat().unwrap();
+                    heartbeat = Instant::now();
+                }
+            }
+            let info = SessionInfo {
+                session_id: session.info().session_id,
+                epoch_host_ns: monotonic_ns().unwrap() + 2_000_000_000,
+            };
+            session.set_timeline(info).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                assert!(Instant::now() < deadline, "timeline not acknowledged");
+                if matches!(
+                    session.poll(Duration::from_millis(10)).unwrap(),
+                    Some(Event::TimelineAcknowledged(_))
+                ) {
+                    break;
+                }
+            }
             tx.send(info.epoch_host_ns).unwrap();
             for sequence in 0..10 {
                 session
@@ -497,9 +584,20 @@ mod tests {
             ChannelMap::Stereo,
         )
         .unwrap();
-        let epoch = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let paired_deadline = Instant::now() + Duration::from_secs(2);
+        while receiver.phase() == 1 && Instant::now() < paired_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            receiver.phase(),
+            4,
+            "paired receiver must wait for a real timeline"
+        );
+        let epoch = rx.recv_timeout(Duration::from_secs(6)).unwrap();
         let until = Instant::now() + Duration::from_secs(3);
-        while receiver.phase() != 3 && Instant::now() < until {
+        while (receiver.phase() != 3 || receiver.state.lock().unwrap().packets < 10)
+            && Instant::now() < until
+        {
             thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(receiver.phase(), 3, "{}", receiver.status());
@@ -512,5 +610,33 @@ mod tests {
         );
         receiver.finish();
         sender.join().unwrap();
+    }
+    #[test]
+    fn waits_beyond_old_deadline_and_cancel_releases_port() {
+        let host_reserve = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let host = host_reserve.local_addr().unwrap();
+        let reserve = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = reserve.local_addr().unwrap().port();
+        drop(reserve);
+        let receiver = Receiver::start(
+            host,
+            port,
+            PairingKey::generate().unwrap(),
+            ChannelMap::Stereo,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(5_300));
+        assert_eq!(receiver.phase(), 1, "{}", receiver.status());
+        let now = Instant::now();
+        receiver.finish();
+        assert!(now.elapsed() < Duration::from_secs(2));
+        let restarted = Receiver::start(
+            host,
+            port,
+            PairingKey::generate().unwrap(),
+            ChannelMap::Stereo,
+        )
+        .unwrap();
+        restarted.finish();
     }
 }

@@ -7,24 +7,27 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
-- Windows: extract the supplied Windows ZIP and open `Start-RoomSync.cmd`. The
-  guided setup asks for phone IP addresses, selects the local LAN route, creates a
-  pairing key and reveals it only when you explicitly ask. No system settings or
-  firewall rules are automatically changed.
-- Android: install the separately supplied test APK, then enter the host/receiver
-  ports, private pairing key and stereo/left/right/mono channel. See the Android
-  app's README for its current lifecycle and installation limits.
-- Both devices must be on a trusted LAN that allows device-to-device traffic.
-  Never expose the UDP ports to the public internet or post pairing keys.
-- Windows' original speaker output is **not delayed or muted**. Keep that output
-  inaudible (for example, headphones) to avoid an echo with the delayed receivers.
-- The Windows binary is unsigned and the Android package is a test build. Do not
-  bypass security warnings for a download you do not trust. Verify source and
-  supplied SHA-256 checksums. Physical device testing is still required.
+Update both the Windows host and Android receiver to **0.1.1**.
 
-Detailed instructions: [Windows](apps/desktop/README.md),
-[Android](apps/android/README.md), [architecture](docs/ARCHITECTURE.md),
-[wire record](docs/PROTOCOL.md), [transport](adapters/transport/README.md).
+- Extract the Windows ZIP and open `Start-RoomSync.cmd`. It opens local controls.
+  Windows automatically lists its LAN addresses; no phone IP needs typing.
+- Create a private setup code, then scan its locally generated QR in Android or
+  paste the whole code. Host IP, ports and key fill automatically.
+- Start listening and connect Android in either order. Pairing waits until Stop,
+  with packet/authentication diagnostics rather than a ten-second click deadline.
+  Windows learns the phone's source address only after authenticated pairing.
+- All configured receivers confirm one shared timeline before a five-second warmup.
+  Windows' original speaker remains undelayed: keep it inaudible to avoid echo.
+- Use a trusted LAN without client isolation. No firewall/interface settings are
+  changed automatically. Never publish the setup code or expose UDP ports online.
+
+The Windows executable is unsigned and Android is a test build. Verify source and
+checksums; do not bypass security warnings for an untrusted download. Real-device
+capture, playback and acoustic synchronization still require validation.
+
+Instructions: [Windows](apps/desktop/README.md), [Android](apps/android/README.md),
+[architecture](docs/ARCHITECTURE.md), [wire record](docs/PROTOCOL.md),
+[transport](adapters/transport/README.md).
 
 ## Implemented code
 
@@ -34,11 +37,12 @@ Detailed instructions: [Windows](apps/desktop/README.md),
 - 48 kHz stereo PCM16, 120 frames per packet. Audio record 512 bytes, authenticated
   UDP datagram 542 bytes. PCM payload alone 1.536 Mbit/s per receiver.
 - Pairwise Noise NNpsk0 handshakes, ChaCha20-Poly1305 authenticated encryption,
-  fixed peers, replay windows, explicit common stream ID/epoch and bounded queues.
+  authenticated peer admission, replay windows, explicit common stream ID/epoch and bounded queues.
 - WASAPI shared-loopback capture and native playback, requested 48 kHz conversion,
   QPC timestamps and hardware-correlated output-time projection. Clock drift and
   capture idle/discontinuity handling preserve a common source timeline.
-- Desktop guided host setup plus explicit CLI host/receiver modes. Up to eight
+- A loopback-only local setup page with offline QR, automatic LAN address selection,
+  Start/Stop and observed connection status, plus explicit developer CLI modes. Up to eight
   configured receivers use separate authenticated sockets but one timeline.
 - Android receiver source/build is under `apps/android`; it uses the same Rust
   protocol/timing code, not a browser audio approximation.

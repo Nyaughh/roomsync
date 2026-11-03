@@ -10,7 +10,8 @@ import java.util.Arrays;
 public final class ReceiverService extends Service {
     static volatile String status="Ready. Start the Windows host, then connect here.";
     static volatile boolean running;
-    private static Config pending;
+    private static PairingConfig pending;
+    static final PairingMemory pairing=new PairingMemory();
     private static final String START="dev.roomsync.START", STOP="dev.roomsync.STOP", CHANNEL="playback";
     private static final int NOTIFICATION=7;
     private volatile boolean cancelled;
@@ -26,25 +27,20 @@ public final class ReceiverService extends Service {
     private int routeId=-1;
     private final BroadcastReceiver noisy=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){cancel("Audio device disconnected. Reconnect to recalibrate.");}};
 
-    static final class Config {
-        final String host; final int hostPort,localPort,channel; final char[] key;
-        Config(String host,int hostPort,int localPort,char[] key,int channel){this.host=host;this.hostPort=hostPort;this.localPort=localPort;this.key=key;this.channel=channel;}
-        void erase(){Arrays.fill(key,'\0');}
-    }
-    static synchronized void begin(Context c,Config config) {
+    static synchronized void begin(Context c,PairingConfig config) {
         if(running){config.erase();throw new IllegalStateException("Receiver is already running or stopping");}
-        pending=config; running=true; status="Starting encrypted receiver…";
+        pairing.store(config);pending=config; running=true; status="Starting encrypted receiver…";
         try { c.startForegroundService(new Intent(c,ReceiverService.class).setAction(START)); }
         catch(RuntimeException e){pending=null;config.erase();running=false;status="Unable to start: "+e.getMessage();throw e;}
     }
     static void requestStop(Context c,String reason){if(running)c.startService(new Intent(c,ReceiverService.class).setAction(STOP).putExtra("reason",reason));}
-    private static synchronized Config takeConfig(){Config c=pending;pending=null;return c;}
+    private static synchronized PairingConfig takeConfig(){PairingConfig c=pending;pending=null;return c;}
     @Override public void onCreate(){super.onCreate();manager=(AudioManager)getSystemService(AUDIO_SERVICE);NotificationManager n=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);n.createNotificationChannel(new NotificationChannel(CHANNEL,"RoomSync playback",NotificationManager.IMPORTANCE_LOW));}
     @Override public int onStartCommand(Intent intent,int flags,int id){
         if(intent==null){stopSelf();return START_NOT_STICKY;}
         if(STOP.equals(intent.getAction())){cancel(intent.getStringExtra("reason") == null ? "Stopped from notification" : intent.getStringExtra("reason"));return START_NOT_STICKY;}
         if(worker!=null)return START_NOT_STICKY;
-        Config config=takeConfig();
+        PairingConfig config=takeConfig();
         if(config==null){running=false;stopSelf();return START_NOT_STICKY;}
         cancelled=false;stopReason="Stopped";routeId=-1;
         try {
@@ -60,21 +56,23 @@ public final class ReceiverService extends Service {
         }catch(Exception e){config.erase();status="Stopped: "+e.getMessage();running=false;cleanup();stopSelf();}
         return START_NOT_STICKY;
     }
+    static String diagnostics(){return "RoomSync Android 0.1.1 (2)\nAndroid "+Build.VERSION.RELEASE+" / API "+Build.VERSION.SDK_INT+"\nLocal IPv4 addresses:\n"+LocalAddresses.describe()+"\n\n"+status+"\nNo pairing key is included.";}
     private Notification notification(){
         PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,ReceiverService.class).setAction(STOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this,CHANNEL).setSmallIcon(dev.roomsync.R.drawable.ic_roomsync).setContentTitle("RoomSync receiver").setContentText("Encrypted audio receiver is active. Tap to view status.").setContentIntent(open).addAction(new Notification.Action.Builder(null,"Stop",stop).build()).setOngoing(true).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_TRANSPORT).build();
     }
-    private void receive(Config config,AudioAttributes attributes){
+    private void receive(PairingConfig config,AudioAttributes attributes){
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         AudioTrack track=null;
         AudioRouting.OnRoutingChangedListener routeListener=null;
         try {
             nativeHandle=NativeReceiver.start(config.host,config.hostPort,config.localPort,config.key,config.channel);config.erase();
-            long started=System.nanoTime();
-            while(!cancelled&&NativeReceiver.phase(nativeHandle)==1){status=NativeReceiver.status(nativeHandle);Thread.sleep(50);}
+            long started=0;
+            while(!cancelled&&(NativeReceiver.phase(nativeHandle)==1||NativeReceiver.phase(nativeHandle)==4)){status=NativeReceiver.status(nativeHandle);Thread.sleep(50);}
             if(cancelled)return;
             if(NativeReceiver.phase(nativeHandle)<0)throw new IllegalStateException(NativeReceiver.status(nativeHandle));
+            started=System.nanoTime();
             int min=AudioTrack.getMinBufferSize(48_000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_FLOAT);
             if(min<=0||min>48_000*8/5)throw new IllegalStateException("This output does not support a bounded 48 kHz float AudioTrack");
             int bytes=Math.max(min,48_000*8/25); // At least 40 ms, never unbounded.
@@ -107,7 +105,7 @@ public final class ReceiverService extends Service {
                 if(phase!=3&&now-started>15_000_000_000L)throw new IllegalStateException("Host clock could not stabilize. Check LAN congestion and reconnect.");
             }
         }catch(InterruptedException e){Thread.currentThread().interrupt();}
-        catch(Throwable e){if(!cancelled)stopReason="Stopped: "+(e.getMessage()==null?e.getClass().getSimpleName():e.getMessage());}
+        catch(Throwable e){if(!cancelled){String reason=e.getMessage()==null?e.getClass().getSimpleName():e.getMessage();while(reason.startsWith("Stopped: "))reason=reason.substring(9);stopReason="Stopped: "+reason;}}
         finally {
             config.erase();output=null;
             if(track!=null){if(routeListener!=null)track.removeOnRoutingChangedListener(routeListener);try{track.pause();track.flush();}catch(IllegalStateException ignored){}track.release();}
@@ -115,9 +113,9 @@ public final class ReceiverService extends Service {
             main.post(()->{worker=null;status=stopReason;running=false;cleanup();stopSelf();});
         }
     }
-    private void cancel(String reason){cancelled=true;stopReason=reason;status="Stopping…";long h=nativeHandle;if(h!=0)NativeReceiver.cancel(h);AudioTrack t=output;if(t!=null){try{t.pause();}catch(IllegalStateException ignored){}}if(worker!=null)worker.interrupt();else{Config c=takeConfig();if(c!=null)c.erase();running=false;status=reason;cleanup();stopSelf();}}
+    private void cancel(String reason){cancelled=true;stopReason=reason;status="Stopping…";long h=nativeHandle;if(h!=0)NativeReceiver.cancel(h);AudioTrack t=output;if(t!=null){try{t.pause();}catch(IllegalStateException ignored){}}if(worker!=null)worker.interrupt();else{PairingConfig c=takeConfig();if(c!=null)c.erase();running=false;status=reason;cleanup();stopSelf();}}
     private void cleanup(){if(focus!=null){manager.abandonAudioFocusRequest(focus);focus=null;}if(noisyRegistered){unregisterReceiver(noisy);noisyRegistered=false;}if(wakeLock!=null){if(wakeLock.isHeld())wakeLock.release();wakeLock=null;}stopForeground(STOP_FOREGROUND_REMOVE);}
-    @Override public void onTaskRemoved(Intent root){cancel("Stopped when the app was closed");super.onTaskRemoved(root);}
+    @Override public void onTaskRemoved(Intent root){pairing.clear();cancel("Stopped when the app was closed");super.onTaskRemoved(root);}
     @Override public void onDestroy(){if(worker!=null)cancel(stopReason);else cleanup();super.onDestroy();}
     @Override public IBinder onBind(Intent intent){return null;}
 }

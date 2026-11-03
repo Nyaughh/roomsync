@@ -12,8 +12,16 @@ LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 for file in "$PLATFORM" "$BT/aapt2" "$BT/d8" "$BT/zipalign" "$BT/apksigner" "$LLVM/aarch64-linux-android26-clang"; do
   [[ -f "$file" ]] || { echo "Missing SDK component: $file" >&2; exit 1; }
 done
+"$ROOT/scripts/fetch-deps.sh"
+QR="$ROOT/deps/zxing-core-3.5.4.jar"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD" "$BUILD/classes" "$BUILD/generated" "$BUILD/dex" "$BUILD/apk/lib/arm64-v8a" "$BUILD/apk/lib/x86_64"
+NOTICES="$ROOT/../../docs/THIRD_PARTY_NOTICES.txt"
+[[ -s "$NOTICES" ]] || { echo "Missing native dependency notices: $NOTICES" >&2; exit 1; }
+rm -rf "$BUILD/assets"
+mkdir -p "$BUILD/assets"
+cp "$ROOT/app/src/main/assets/"*.txt "$BUILD/assets/"
+cp "$NOTICES" "$BUILD/assets/THIRD_PARTY_NOTICES.txt"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LLVM/aarch64-linux-android26-clang"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$LLVM/x86_64-linux-android26-clang"
 export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"
@@ -23,12 +31,12 @@ cp "$ROOT/native/target/x86_64-linux-android/release/libroomsync_android.so" "$B
 rm -rf "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 mkdir -p "$BUILD/classes" "$BUILD/generated" "$BUILD/dex"
 "$BT/aapt2" compile --dir "$ROOT/app/src/main/res" -o "$BUILD/resources.zip"
-"$BT/aapt2" link -o "$BUILD/base.apk" -I "$PLATFORM" --manifest "$ROOT/app/src/main/AndroidManifest.xml" --java "$BUILD/generated" --min-sdk-version 26 --target-sdk-version 35 "$BUILD/resources.zip"
+"$BT/aapt2" link -o "$BUILD/base.apk" -I "$PLATFORM" --manifest "$ROOT/app/src/main/AndroidManifest.xml" -A "$BUILD/assets" --java "$BUILD/generated" --min-sdk-version 26 --target-sdk-version 35 "$BUILD/resources.zip"
 find "$ROOT/app/src/main/java" "$BUILD/generated" -name '*.java' | sort > "$BUILD/sources.txt"
 # Some cloud JDK images include javac as a module without its shell launcher.
-java -m jdk.compiler/com.sun.tools.javac.Main -source 8 -target 8 -classpath "$PLATFORM" -Xlint:all,-options -d "$BUILD/classes" @"$BUILD/sources.txt"
+java -m jdk.compiler/com.sun.tools.javac.Main -source 8 -target 8 -classpath "$PLATFORM:$QR" -Xlint:all,-options -d "$BUILD/classes" @"$BUILD/sources.txt"
 find "$BUILD/classes" -name '*.class' | sort > "$BUILD/classes.txt"
-"$BT/d8" --lib "$PLATFORM" --min-api 26 --output "$BUILD/dex" @"$BUILD/classes.txt"
+"$BT/d8" --lib "$PLATFORM" --min-api 26 --output "$BUILD/dex" @"$BUILD/classes.txt" "$QR"
 python3 - "$BUILD" <<'PY'
 import pathlib,shutil,sys,zipfile
 b=pathlib.Path(sys.argv[1]);shutil.copyfile(b/'base.apk',b/'unsigned.apk')

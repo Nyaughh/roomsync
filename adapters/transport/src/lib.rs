@@ -29,6 +29,11 @@ const CLOCK_REQUEST: u8 = 4;
 const CLOCK_REPLY: u8 = 5;
 const CLOSE: u8 = 6;
 const HEARTBEAT: u8 = 7;
+const SET_TIMELINE: u8 = 8;
+const TIMELINE_ACK: u8 = 9;
+
+mod pairing;
+pub use pairing::{PairingListener, PairingProgress, PairingStage};
 const HEADER: usize = 13;
 const MAX_PLAIN: usize = 1 + SESSION_PACKET_BYTES;
 const MAX_PENDING_CLOCKS: usize = 8;
@@ -51,6 +56,8 @@ pub enum Error {
     PendingClockLimit,
     SequenceExhausted,
     ClockUnavailable,
+    Cancelled,
+    TimelineNotReady,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,6 +76,10 @@ impl fmt::Display for Error {
             Self::WrongRole => f.write_str("operation is not valid for this session role"),
             Self::WrongSession => f.write_str("audio packet belongs to another session"),
             Self::PendingClockLimit => f.write_str("too many outstanding clock requests"),
+            Self::Cancelled => f.write_str("pairing cancelled"),
+            Self::TimelineNotReady => {
+                f.write_str("waiting for an authenticated playback timeline acknowledgment")
+            }
             Self::ClockUnavailable => {
                 f.write_str("monotonic hardware clock unavailable; session must stop")
             }
@@ -219,6 +230,8 @@ pub enum Role {
 pub enum Event {
     Audio(AudioPacket),
     ClockSample(ClockExchange),
+    Timeline(SessionInfo),
+    TimelineAcknowledged(SessionInfo),
     Heartbeat,
     Closed,
 }
@@ -604,6 +617,9 @@ pub struct Session {
     confirmation: Option<Confirmation>,
     stats: Stats,
     peer_audio_packet_count: Option<u64>,
+    audio_started: bool,
+    timeline_acknowledged: bool,
+    timeline_control_nonce: Option<u64>,
 }
 impl Session {
     fn new(
@@ -613,14 +629,33 @@ impl Session {
         info: SessionInfo,
         crypto: StatelessTransportState,
     ) -> Self {
-        Self {
-            socket: endpoint.socket,
-            peer: endpoint.peer,
+        Self::new_parts(
+            endpoint.socket,
+            endpoint.peer,
+            endpoint.config,
             clock,
             role,
             info,
             crypto,
-            config: endpoint.config,
+        )
+    }
+    fn new_parts(
+        socket: UdpSocket,
+        peer: SocketAddr,
+        config: Config,
+        clock: MonotonicClock,
+        role: Role,
+        info: SessionInfo,
+        crypto: StatelessTransportState,
+    ) -> Self {
+        Self {
+            socket,
+            peer,
+            clock,
+            role,
+            info,
+            crypto,
+            config,
             next_nonce: 0,
             replay: ReplayWindow::default(),
             audio_replay: ReplayWindow::default(),
@@ -630,6 +665,9 @@ impl Session {
             confirmation: None,
             stats: Stats::default(),
             peer_audio_packet_count: None,
+            audio_started: false,
+            timeline_acknowledged: info.epoch_host_ns != 0,
+            timeline_control_nonce: None,
         }
         // endpoint.key is zeroized here; transport state owns derived session keys.
     }
@@ -694,6 +732,9 @@ impl Session {
         if self.role != Role::Host {
             return Err(Error::WrongRole);
         }
+        if self.info.epoch_host_ns == 0 || !self.timeline_acknowledged {
+            return Err(Error::TimelineNotReady);
+        }
         if packet.session_id() != self.info.session_id {
             return Err(Error::WrongSession);
         }
@@ -702,8 +743,39 @@ impl Session {
         let mut encoded = [0; SESSION_PACKET_BYTES];
         packet.encode(&mut encoded);
         payload[1..].copy_from_slice(&encoded);
-        self.send(&payload)
+        self.send(&payload)?;
+        self.audio_started = true;
+        Ok(())
     }
+
+    /// Assign/retry the common future timeline after all peers have paired.
+    /// Wait for TimelineAcknowledged before sending audio. Repeating identical
+    /// metadata is safe; changing the timeline after audio starts is prohibited.
+    pub fn set_timeline(&mut self, info: SessionInfo) -> Result<()> {
+        if self.role != Role::Host {
+            return Err(Error::WrongRole);
+        }
+        let now = self.clock.now_ns()?;
+        if info.session_id == 0
+            || info.epoch_host_ns <= now
+            || info.epoch_host_ns - now > 60_000_000_000
+        {
+            return Err(Error::InvalidConfig(
+                "timeline must have a nonzero id and start within the next 60 seconds",
+            ));
+        }
+        if self.audio_started && info != self.info {
+            return Err(Error::InvalidConfig(
+                "cannot change timeline after audio starts",
+            ));
+        }
+        if info != self.info {
+            self.timeline_acknowledged = false;
+        }
+        self.info = info;
+        self.send(&timeline_payload(SET_TIMELINE, info))
+    }
+
     pub fn request_clock(&mut self) -> Result<()> {
         if self.role != Role::Receiver {
             return Err(Error::WrongRole);
@@ -854,11 +926,15 @@ impl Session {
                     self.confirmation = None;
                 }
             }
-            let Some((len, _)) = self.open(&bytes[..n], &mut plain) else {
+            let Some((len, nonce)) = self.open(&bytes[..n], &mut plain) else {
                 continue;
             };
             match (plain[0], len) {
                 (AUDIO, MAX_PLAIN) if self.role == Role::Receiver => {
+                    if self.info.epoch_host_ns == 0 {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
                     let Ok(packet) = AudioPacket::decode(&plain[1..len]) else {
                         self.stats.malformed_rejected += 1;
                         continue;
@@ -873,8 +949,51 @@ impl Session {
                     }
                     self.audio_replay.commit(packet.sequence());
                     self.stats.audio_received += 1;
+                    self.audio_started = true;
                     self.last_authenticated = Instant::now();
                     return Ok(Some(Event::Audio(packet)));
+                }
+                (SET_TIMELINE, 17) if self.role == Role::Receiver => {
+                    if self
+                        .timeline_control_nonce
+                        .is_some_and(|previous| nonce < previous)
+                    {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
+                    let info = SessionInfo {
+                        session_id: read_u64(&plain[1..9]),
+                        epoch_host_ns: read_u64(&plain[9..17]),
+                    };
+                    if info.session_id == 0
+                        || info.epoch_host_ns == 0
+                        || (self.audio_started && info != self.info)
+                    {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
+                    let changed = info != self.info;
+                    self.timeline_control_nonce = Some(nonce);
+                    self.info = info;
+                    self.last_authenticated = Instant::now();
+                    self.send(&timeline_payload(TIMELINE_ACK, info))?;
+                    if changed {
+                        self.audio_replay = ReplayWindow::default();
+                        return Ok(Some(Event::Timeline(info)));
+                    }
+                }
+                (TIMELINE_ACK, 17) if self.role == Role::Host => {
+                    let info = SessionInfo {
+                        session_id: read_u64(&plain[1..9]),
+                        epoch_host_ns: read_u64(&plain[9..17]),
+                    };
+                    if info != self.info || info.epoch_host_ns == 0 {
+                        self.stats.malformed_rejected += 1;
+                        continue;
+                    }
+                    self.timeline_acknowledged = true;
+                    self.last_authenticated = Instant::now();
+                    return Ok(Some(Event::TimelineAcknowledged(info)));
                 }
                 (CLOCK_REQUEST, 9) if self.role == Role::Host => {
                     self.last_authenticated = Instant::now();
@@ -927,5 +1046,16 @@ impl Session {
     }
 }
 
+fn timeline_payload(kind: u8, info: SessionInfo) -> [u8; 17] {
+    let mut payload = [0; 17];
+    payload[0] = kind;
+    payload[1..9].copy_from_slice(&info.session_id.to_be_bytes());
+    payload[9..17].copy_from_slice(&info.epoch_host_ns.to_be_bytes());
+    payload
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pairing_tests;
