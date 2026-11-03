@@ -6,6 +6,7 @@ use roomsync_core::{AudioPacket, device_clock::DeviceClockEstimator};
 use roomsync_desktop::{
     CapturePacketizer,
     budget::{OutputBudget, choose_lead},
+    local_playback::LocalOutput,
 };
 use roomsync_transport::{Config, Endpoint, Event, PairingKey, SessionInfo};
 use roomsync_windows::{CaptureConfig, CaptureStream, qpc_now_ns};
@@ -22,6 +23,16 @@ use std::{
 
 pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()> {
     qpc_now_ns()?;
+    if let Some(sink) = &plan.settings.local_output_device {
+        let source =
+            plan.settings.capture_device.as_deref().ok_or(
+                "Select an explicit virtual capture source before enabling local speakers",
+            )?;
+        if !plan.settings.virtual_route_confirmed {
+            return Err("Confirm virtual routing before enabling local speakers".into());
+        }
+        roomsync_windows::validate_loopback_route(source, sink)?;
+    }
     let _guard = crate::StopGuard(cancel.clone());
     let count = plan.settings.receivers;
     // Bind all requested sockets before starting threads, so port conflicts are
@@ -159,7 +170,7 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                 "Measuring each output queue before choosing one safe shared playback delay."
                     .into();
         });
-        let outputs = loop {
+        let mut outputs = loop {
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -186,6 +197,39 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
         let capture_allowance = buffer_ns
             .max(capture.endpoint.maximum_stream_latency_ns)
             .max(capture.endpoint.engine_period_ns);
+        let mut local_output = if let Some(sink) = &plan.settings.local_output_device {
+            update(&state, |s| {
+                s.title = "Calibrating all speakers".into();
+                s.local_output_message = "Measuring the Windows output queue while silent".into();
+            });
+            Some(LocalOutput::start(&capture.endpoint.id, sink)?)
+        } else {
+            None
+        };
+        if let Some(local) = &mut local_output {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let local_budget = loop {
+                if cancel.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                if let Ok(error) = fail_rx.try_recv() {
+                    return Err(error.into());
+                }
+                local.check()?;
+                if let Some(budget) = local.budget() {
+                    break budget;
+                }
+                if Instant::now() >= deadline {
+                    return Err("Windows speaker timing did not stabilize within five seconds. Check the output device and restart the group.".into());
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            outputs.push(local_budget);
+            update(&state, |s| {
+                s.local_horizon_ms = Some(local_budget.output_horizon_ns as f64 / 1e6);
+                s.local_output_message = "Calibrated; waiting for the shared timeline".into();
+            });
+        }
         let budget = choose_lead(
             plan.settings.latency_ms * 1_000_000,
             capture_allowance,
@@ -203,6 +247,9 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                 .checked_add(5_000_000_000)
                 .ok_or("clock overflow")?,
         };
+        if let Some(local) = &mut local_output {
+            local.arm(info.session_id, info.epoch_host_ns)?;
+        }
         *shared_timeline
             .lock()
             .map_err(|_| "timeline state unavailable")? = Some((info, budget.lead_ns));
@@ -214,6 +261,9 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                     .into();
         });
         while !acknowledged.iter().all(|ack| ack.load(Ordering::Acquire)) {
+            if let Some(local) = &mut local_output {
+                local.check()?;
+            }
             if cancel.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -239,6 +289,9 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
             while !cancel.load(Ordering::Acquire) {
                 if let Ok(error) = fail_rx.try_recv() {
                     return Err(error.into());
+                }
+                if let Some(local) = &mut local_output {
+                    local.check()?;
                 }
                 if capture.is_finished() {
                     return Err("Windows capture stopped. Check the output device, then stop and restart listening.".into());
@@ -271,6 +324,7 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                         for queue in &queues {
                             queue.push(audio.clone()).map_err(|_| "Network queue overflow; session stopped instead of accumulating delay")?;
                         }
+                        if let Some(local) = &local_output { local.push(audio).map_err(|_| "Local speaker queue overflow or timeline failure; restart the group")?; }
                         Ok(())
                     })?;
                 } else {
@@ -281,11 +335,23 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
                     update(&state, |s| {
                         s.phase = "streaming".into();
                         s.title = "Shared timeline is running".into();
-                        s.message="Play music through the Windows capture output. Keep its original speaker inaudible to avoid echo. Synchronization is estimated, not acoustically calibrated.".into();
+                        if s.local_output_enabled {
+                            s.local_output_message = "Playing on the shared timeline".into();
+                            s.message = "Play music into the selected virtual capture output. Windows and Android use one timeline. Keep other monitoring off; acoustic synchronization is still unmeasured.".into();
+                        } else {
+                            s.message = "Play music through the Windows capture output. Keep its original speaker inaudible to avoid echo. Synchronization is estimated, not acoustically calibrated.".into();
+                        }
                     });
                 }
                 if ui_update.elapsed() >= Duration::from_millis(500) {
+                    let local_stats = local_output.as_ref().map(LocalOutput::stats);
                     update(&state, |s| {
+                        if let Some(stats) = local_stats {
+                            s.local_concealed_frames = stats.concealed_frames;
+                            s.local_late_packets = stats.late_packets;
+                            s.local_too_far_packets = stats.too_far_packets;
+                            s.local_output_peak = stats.peak;
+                        }
                         s.packets = packetizer.packets_emitted();
                         s.capture_peak = capture_peak;
                         s.source_peak = source_peak;
@@ -300,8 +366,10 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
             Ok(())
         })();
         let stopped = capture.stop();
+        let local_stopped = local_output.map(LocalOutput::stop).transpose();
         capture_result?;
         stopped?;
+        local_stopped?;
         Ok(())
     })();
     let user_stopped = cancel.load(Ordering::Acquire);

@@ -12,8 +12,9 @@ Real Windows WASAPI system-output capture and shared-mode speaker playback. This
 - Bounded lock-free capture queue and reusable buffer pool. Slow consumers cause counted packet drops and a discontinuity on the next delivered packet, never unbounded memory or audio-thread blocking. Packet ownership includes the buffer until it is dropped.
 - WASAPI capture timestamp and device-position metadata, invalid timestamp handling, silence/discontinuity flags, audio clock observations, render starvation counters, and a signed calibration correction.
 - Explicit stop/join, RAII stream teardown and capture-buffer release, recoverable device-loss errors. Never silently switches output devices or restarts an old synchronization epoch.
+- Optional local-monitor route guard compares explicit opaque endpoint IDs before playback and rechecks the resolved sink. It rejects direct same-endpoint feedback and default-output fallback.
 
-Requires Windows 10 version 1703 or newer for native event-driven loopback. No virtual driver, admin installation, background service, credentials, or paid service. No network socket is opened by this crate.
+Requires Windows 10 version 1703 or newer for native event-driven loopback. This crate installs no driver or background service, changes no system setting and requires no credentials. A synchronized local-speaker arrangement can use a separately user-installed virtual output. No network socket is opened by this crate.
 
 ## Build and local diagnostic
 
@@ -74,11 +75,52 @@ let render = RenderStream::start(RenderConfig::default(), move |timing, out| {
 
 `out` is pre-zeroed, stereo, at most 8,000 frames. Returning `RenderFill::Silence` ignores any written samples and sets WASAPI's silent flag. Non-finite samples are silenced and finite samples clipped before playback. A complete silence block is preferable to inventing a deadline when synchronization is not locked.
 
+For local playback of a captured virtual endpoint, pass its actual
+`capture.endpoint.id` as `RenderConfig.loopback_source_endpoint_id` and a distinct
+explicit `endpoint_id` for the speakers. `validate_loopback_route` is also
+available for control-layer preflight. A missing sink, empty/NUL-containing ID or
+the same ID (including case variations) is rejected before startup. The resolved
+sink is checked again before silence priming and `Start`; it never switches to a
+default. These checks prevent the direct endpoint loop, not arbitrary routing
+through another virtual mixer or Windows monitoring.
+
+`RenderTiming.callback_qpc_ns` is sampled for each callback.
+`clock_advancing` means both device position and correlated QPC advanced since
+the prior device event. The callback is called at startup, but requested audio
+is forced to silence until an advancing observation has occurred. Calibrate
+while returning silence: observe advancing positions for at least 500 ms,
+collect the maximum `estimated_dac_start_ns - callback_qpc_ns` and full callback
+duration, then include that output requirement in the group lead. Keep the same
+stream alive through timeline selection and playback. This measures a timestamp
+budget, not acoustic latency. The desktop integration owns bounded calibration,
+its startup deadline and late-output recovery.
+
 `qpc_now_ns()` uses QueryPerformanceCounter with QueryPerformanceFrequency. It shares the **same machine-local QPC epoch** as the capture and audio-clock timestamps; WASAPI returns 100 ns units and the adapter converts them once to ns. Never combine these with an arbitrary `Instant` epoch or wall clock. Different machines still require the transport's clock synchronization.
 
 ## Timing and recovery limits
 
-`estimated_dac_start_ns` projects the first frame of the next write from the correlated audio-clock position/QPC pair and cumulative submitted frame count. It divides by the audio clock's actual frequency, rather than assuming its units are PCM frames. A stale write cursor stops with a reopen-required error; engine padding cannot safely reconstruct unknown in-flight device latency. Invalid/regressing/stale clock observations also stop. The control layer must reopen and establish a fresh synchronization epoch.
+`estimated_dac_start_ns` projects the first frame of the next write from the correlated audio-clock position/QPC pair and cumulative submitted frame count. It divides by the audio clock's actual frequency, rather than assuming its units are PCM frames. A stale write cursor or callback that misses its uncorrected DAC deadline stops with a reopen-required error; engine padding cannot safely reconstruct unknown in-flight device latency. Invalid/regressing/stale clock observations also stop. A frozen device position cannot be hidden by fresh QPC timestamps: a 500 ms no-advance bound applies even while events continue. The control layer must reopen and establish a fresh synchronization epoch.
+
+Empty endpoint padding alone does not prove an audible glitch: engine/driver
+audio can remain in flight. A single-period shared buffer can even be normally
+empty at each event. Guarded local playback therefore requires at least **two
+reported engine periods** of actual buffer capacity and explicitly rejects a
+smaller/unknown-period endpoint before starting. It does not override the
+documented zero-duration shared-event initialization to request a larger buffer.
+After full-buffer priming, any empty padding is treated as lost scheduling
+headroom, **even before the first advancing clock observation**. It cannot rule
+out engine-inserted silence that would invalidate the write cursor, so guarded
+mode conservatively stops, including if padding empties during a callback,
+instead of calibrating an uncertain startup origin or shifting the timeline.
+This policy can reconnect even without an audible glitch and needs hardware
+validation. The `render_underruns` count includes these uncertain starvation
+events. Unguarded diagnostic/legacy playback exposes empty padding as
+`discontinuity`; it never invents a new cursor after a missed DAC deadline.
+
+The Windows clock API can return `S_FALSE` when timing is inaccurate. The adapter
+preserves that HRESULT rather than letting a generated wrapper collapse it to
+success, retries once, then fails closed if no accurate observation is available.
+No unbounded clock-read loop runs on the audio thread.
 
 This remains an **estimate**, not a measured acoustic deadline. `maximum_stream_latency_ns` reports WASAPI's maximum stream latency separately; it is not automatically added to the clock projection because that could double count latency. Bluetooth, driver buffering, speaker DSP and physical propagation can add unknown delay. Set `extra_output_delay_ns` only from a deliberate per-device calibration; a positive correction means the sound arrives later. Do not promise sample-accurate multi-speaker sync without measuring the actual outputs.
 
@@ -88,7 +130,7 @@ Check `is_finished()` from the control thread. `stop()` joins and returns the te
 
 Loopback observes what is already playing on the source endpoint. It cannot retroactively delay that original output. Playing the delayed receiver output on the **same captured endpoint creates a feedback/echo loop**. Even with separate endpoints, an audible undelayed host speaker plus delayed receivers creates echo.
 
-This crate deliberately never mutes the captured endpoint, alters user volume, installs a virtual cable, or claims muting preserves capture. A full synchronized host-speaker experience needs an explicitly chosen routing arrangement (for example a separate capture-only output and a different receiver output) and device testing. Until that exists, keep the host's original sound physically inaudible, such as by capturing a dedicated unused/headphone endpoint whose real-world sound is not in the listening room. Changing routing or installing a driver is a separate user-controlled step.
+This crate deliberately never mutes the captured endpoint, alters user volume, installs a virtual cable, or claims muting preserves capture. Local synchronized playback needs an explicitly chosen routing arrangement and device testing: route source applications to the virtual cable's **playback** endpoint (VB-CABLE normally calls it `CABLE Input`), capture that render endpoint with loopback, and send RoomSync's delayed output only to the distinct physical speakers. Do not enable Windows `Listen to this device` or another monitor/mixer path that duplicates the undelayed source or sends it back into the cable. The cable's recording endpoint (`CABLE Output`) is not selected by this render-endpoint loopback adapter. Driver installation and application/default-output routing remain separate user-controlled steps. If the source remains audible on a physical endpoint, the original echo limitation remains.
 
 The captured mix may include notifications and calls. A transport integration must require deliberate sharing and authenticated/encrypted peer setup; it must not default to an open LAN stream.
 
@@ -103,6 +145,9 @@ The `wasapi` 0.26 high-level `read_from_device` helper creates a slice from the 
 - [Microsoft: stream flags, automatic conversion and SRC](https://learn.microsoft.com/en-us/windows/win32/coreaudio/audclnt-streamflags-xxx-constants)
 - [Microsoft: IAudioClock::GetPosition](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getposition)
 - [Microsoft: IAudioClock::GetFrequency](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getfrequency)
+- [Microsoft: GetCurrentPadding and unread engine frames](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getcurrentpadding)
+- [Microsoft: opaque endpoint IDs](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-getid)
+- [VB-Audio: official VB-CABLE endpoint routing and installation](https://vb-audio.com/Cable/)
 - [Microsoft: IAudioClient::GetStreamLatency](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getstreamlatency)
 - [Microsoft: IAudioClient::Initialize, including zero shared-event duration](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize)
 - [Microsoft: rendering a stream, including priming before Start](https://learn.microsoft.com/en-us/windows/win32/coreaudio/rendering-a-stream)

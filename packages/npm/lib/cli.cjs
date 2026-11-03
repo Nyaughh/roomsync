@@ -35,7 +35,8 @@ function help(version) {
     'or Command Prompt, not WSL. Keep the terminal open; Ctrl+C stops the host.\n\n' +
     'Start opens controls on 127.0.0.1 only. Audio sharing starts only after you\n' +
     'create a private setup code and choose Start listening in the control page.\n' +
-    'The original host audio is not delayed or muted. This unsigned preview\n' +
+    'Default capture does not delay or mute original host audio. Optional synced\n' +
+    'Windows speakers require explicit virtual routing. This unsigned preview\n' +
     'still needs physical audio/synchronization validation.\n';
 }
 

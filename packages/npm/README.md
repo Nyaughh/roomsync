@@ -1,10 +1,13 @@
 # RoomSync npm launcher (unpublished preview)
 
-A small, dependency-free launcher for the **Windows x64 RoomSync 0.1.4 host**.
+A small, dependency-free launcher for the **Windows x64 RoomSync 0.1.5 host**.
 It bundles the native executable and opens its local setup page. No Rust compiler,
-extra runtime download, install script, virtual driver or paid service is needed.
+extra runtime download, install script or paid service is needed. The launcher
+does not install a virtual driver; optional synchronized Windows speakers require
+one to be installed and routed separately by the user.
 Requires Node.js 20+ and Windows 10 version 1703 or newer with x64 Node.js.
-The Android receiver app is still installed separately.
+The Android receiver app is still installed separately. Android **0.1.4** remains
+wire-compatible with Windows 0.1.5; no Android update is needed for this feature.
 
 **This package has not been published to npm.** Do not run plain `npx roomsync`
 until a release and its owner are confirmed; that command resolves a registry
@@ -14,14 +17,14 @@ publication/name/license decision. Third-party notices are included separately.
 
 ## Use the preview tarball
 
-After obtaining the verified `roomsync-0.1.4.tgz`, in **Windows PowerShell**:
+After obtaining the verified `roomsync-0.1.5.tgz`, in **Windows PowerShell**:
 
 ```powershell
 # Run directly from the local tarball, without a global installation:
-npx --package .\roomsync-0.1.4.tgz roomsync start
+npx --package .\roomsync-0.1.5.tgz roomsync start
 
 # Or install the local package, then use the short command:
-npm install --global .\roomsync-0.1.4.tgz
+npm install --global .\roomsync-0.1.5.tgz
 roomsync start
 ```
 
@@ -50,11 +53,42 @@ macOS, Linux, WSL, Windows 32-bit and native ARM64 Node.js are not supported.
 Help/version and package inspection still work there, but no host is launched.
 Use Windows PowerShell/Command Prompt, not a WSL shell.
 
-The original Windows audio is not muted or delayed. Keep it inaudible in the
-listening room, for example through headphones, to avoid echo. This is an
+In default phone-only capture mode, original Windows audio is not muted or delayed.
+Keep it inaudible in the listening room, for example through headphones, to avoid
+echo. For synchronized Windows speakers, use the explicit routing below. This is an
 unsigned preview, not a claim of zero latency or physically measured speaker
 synchronization. The launcher does not validate audio hardware; `doctor` verifies
 only package integrity/platform support.
+
+## Optional synchronized Windows speakers
+
+This opt-in preview sends the same timestamped PCM and common presentation
+timeline to Windows speakers and Android. It does not retroactively delay audio
+already playing through the captured physical endpoint.
+
+1. Separately install a virtual cable from its official provider, such as
+   [VB-Audio's VB-CABLE](https://vb-audio.com/Cable/), following its driver,
+   administrator/restart and license instructions. No driver is bundled here.
+2. Route the source applications you intend to share to the cable's **playback**
+   endpoint, normally **CABLE Input**. RoomSync captures that output by loopback;
+   the recording endpoint **CABLE Output** is not the capture selection.
+3. In RoomSync Advanced settings, select that explicit virtual capture source,
+   enable local speaker playback, and select a different physical speaker output.
+   Review and confirm the route. RoomSync will not change Windows/app routing.
+4. Do not enable Windows **Listen to this device** or another monitor/mixer path
+   that duplicates the source or routes speaker output back into the cable.
+5. Pair the Android receivers and start the group. The local output is measured
+   while silent and included in the same budget as the phones. Keep the source
+   and speaker selection unchanged during playback.
+6. Stop the group before changing devices. Restore your usual app/Windows output
+   afterward if you changed it, otherwise audio routed into the cable may be silent.
+
+Same-endpoint routes are rejected. Strict queue and clock checks can reject
+unsupported outputs or stop a session instead of silently shifting its timeline;
+guarded local playback requires at least two engine periods of actual shared
+buffer capacity. This remains a cloud-built preview, not physically verified
+speaker synchronization. Bluetooth/DSP can add unmeasured delay. Use built-in or
+wired speakers for initial testing.
 
 ## Safety and packaging
 

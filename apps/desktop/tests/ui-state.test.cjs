@@ -18,6 +18,7 @@ class Element {
     this.disabled = /\bdisabled\b/.test(attributes);
     this.value = attributes.match(/\bvalue="([^"]*)"/)?.[1] || '';
     this.required = /\brequired\b/.test(attributes);
+    this.checked = /\bchecked\b/.test(attributes);
     this.min = attributes.match(/\bmin="([^"]*)"/)?.[1];
     this.max = attributes.match(/\bmax="([^"]*)"/)?.[1];
     this.textContent = '';
@@ -54,6 +55,8 @@ function app(options = {}) {
     prepared: !!settings, windows_supported: options.supported ?? true,
     receiver_count: settings?.receivers || 0, peers: [], lead_ms: null, packets: 0,
     capture_allowance_ms: 0, capture_peak: 0, source_peak: 0, capture_age_ms: 0,
+    local_output_enabled: !!settings?.local_output_device, local_output_message: 'Fixture local output',
+    local_horizon_ms: null, local_concealed_frames: 0, local_late_packets: 0, local_too_far_packets: 0, local_output_peak: 0,
   };
   let offline = false;
   let copyFails = false;
@@ -73,11 +76,11 @@ function app(options = {}) {
       calls.push({ url, method: request.method, body });
       const ok = value => ({ ok: true, json: async () => structuredClone(value) });
       switch (url) {
-        case '/api/config': return ok({ windows_supported: state.windows_supported, interfaces: options.noNetwork ? [] : [{ address: '192.0.2.1', name: 'Synthetic fixture' }], devices: [], prepared_settings: settings, ui_test: options.uiTest || false });
+        case '/api/config': return ok({ windows_supported: state.windows_supported, interfaces: options.noNetwork ? [] : [{ address: '192.0.2.1', name: 'Synthetic fixture' }], devices: [{ id: 'virtual', name: 'CABLE Input (fixture)' }, { id: 'speakers', name: 'Physical speakers (fixture)' }, { id: 'headphones', name: 'Headphones (fixture)' }], prepared_settings: settings, ui_test: options.uiTest || false });
         case '/api/status': if (offline) throw Error('Offline fixture'); return ok(state);
         case '/api/prepare':
           settings = body;
-          state = { ...state, prepared: true, phase: 'prepared', receiver_count: body.receivers, peers: Array.from({ length: body.receivers }, (_, index) => ({ index, message: 'Not listening yet' })) };
+          state = { ...state, prepared: true, phase: 'prepared', local_output_enabled: !!body.local_output_device, receiver_count: body.receivers, peers: Array.from({ length: body.receivers }, (_, index) => ({ index, message: 'Not listening yet' })) };
           return ok({ ok: true });
         case '/api/setup': return ok({ payload: `SYNTHETIC-SECRET-${body.index}`, modules: ['10', '01'] });
         case '/api/start': state.phase = 'listening'; state.title = 'Waiting for Android'; return ok({ ok: true });
@@ -196,4 +199,85 @@ test('saved settings survive page initialization without exposing secrets', asyn
   const e = model.elements; await model.settle();
   assert.equal(e.latency.value, 170); assert.equal(e.port.value, 5050); assert.equal(e.count.value, 2);
   assert.equal(e.secret.hidden, true); assert.equal(e.start.disabled, false);
+});
+
+
+function enableLocal(model) {
+  const e = model.elements;
+  e.localEnabled.checked = true; e.localEnabled.listeners.input();
+  e.device.value = 'virtual'; e.device.listeners.input();
+  e.localOutput.value = 'speakers'; e.localOutput.listeners.input();
+}
+
+test('phone-only is the default and sends no local route authorization', async () => {
+  const model = app(); const e = model.elements; await model.settle();
+  assert.equal(e.localEnabled.checked, false); assert.equal(e.routeConfirmed.checked, false);
+  assert.equal(e.localOptions.hidden, true); assert.equal(e.routeReminder.hidden, true);
+  assert.equal(e.localOutput.disabled, true);
+  await e.prepare.onclick();
+  const sent = model.calls.find(call => call.url === '/api/prepare').body;
+  assert.equal(sent.local_output_device, null); assert.equal(sent.virtual_route_confirmed, false);
+});
+
+test('local playback requires explicit different endpoints and routing acknowledgment', async () => {
+  const model = app(); const e = model.elements; await model.settle();
+  e.localEnabled.checked = true; e.localEnabled.listeners.input();
+  assert.equal(e.localOptions.hidden, false); assert.equal(e.routeReminder.hidden, false);
+  assert.equal(e.deviceLabel.textContent, 'Virtual capture output');
+  await e.prepare.onclick(); assert.match(e.error.textContent, /explicit virtual capture/);
+  e.device.value = 'virtual'; e.device.listeners.input();
+  await e.prepare.onclick(); assert.match(e.error.textContent, /physical speakers/);
+  e.localOutput.value = 'virtual'; e.localOutput.listeners.input();
+  await e.prepare.onclick(); assert.match(e.error.textContent, /feedback/);
+  e.localOutput.value = 'speakers'; e.localOutput.listeners.input();
+  await e.prepare.onclick(); assert.match(e.error.textContent, /direct monitoring is off/);
+  assert.equal(model.calls.some(call => call.url === '/api/prepare'), false);
+  e.routeConfirmed.checked = true; e.routeConfirmed.listeners.input();
+  await e.prepare.onclick();
+  const sent = model.calls.find(call => call.url === '/api/prepare').body;
+  assert.equal(sent.capture_device, 'virtual'); assert.equal(sent.local_output_device, 'speakers');
+  assert.equal(sent.virtual_route_confirmed, true); assert.equal(e.start.disabled, false);
+});
+
+test('route changes reset acknowledgment, clear private code, and require updated setup', async () => {
+  const model = app(); const e = model.elements; await model.settle(); enableLocal(model);
+  e.routeConfirmed.checked = true; await e.prepare.onclick(); await e.reveal.onclick();
+  e.localOutput.value = 'headphones'; e.localOutput.listeners.input();
+  assert.equal(e.routeConfirmed.checked, false); assert.equal(e.secret.hidden, true);
+  assert.equal(e.start.disabled, true); assert.equal(e.pairing.hidden, true);
+  await e.prepare.onclick(); assert.match(e.error.textContent, /direct monitoring is off/);
+  e.routeConfirmed.checked = true; e.routeConfirmed.listeners.input(); await e.prepare.onclick();
+  e.device.value = 'speakers'; e.device.listeners.input(); assert.equal(e.routeConfirmed.checked, false);
+  e.routeConfirmed.checked = true; e.localEnabled.checked = false; e.localEnabled.listeners.input();
+  assert.equal(e.routeConfirmed.checked, false); assert.equal(e.localOptions.hidden, true);
+  assert.equal(e.routeReminder.hidden, false); assert.equal(e.deviceLabel.textContent, 'Capture output');
+  await e.prepare.onclick();
+  const sent = model.calls.filter(call => call.url === '/api/prepare').at(-1).body;
+  assert.equal(sent.local_output_device, null); assert.equal(sent.virtual_route_confirmed, false);
+});
+
+test('local status and diagnostics stay available; Stop leaves the routing warning visible', async () => {
+  const model = app(); const e = model.elements; await model.settle(); enableLocal(model);
+  e.routeConfirmed.checked = true; await e.prepare.onclick(); await e.start.onclick();
+  assert.equal(e.localEnabled.disabled, true); assert.equal(e.localOutput.disabled, true); assert.equal(e.routeConfirmed.disabled, true);
+  model.update({ phase: 'streaming', local_output_message: 'Playing on the shared timeline', local_horizon_ms: 62.5, local_concealed_frames: 12, local_late_packets: 3, local_too_far_packets: 2, local_output_peak: .5 });
+  await model.refresh();
+  assert.equal(e.localStatus.hidden, false); assert.match(e.localStatus.textContent, /shared timeline/);
+  assert.match(e.localMetrics.textContent, /62.5 ms/); assert.match(e.localMetrics.textContent, /Concealed frames 12/);
+  assert.match(e.localMetrics.textContent, /Late packets 3/); assert.match(e.localMetrics.textContent, /Output peak 50.0%/);
+  assert.match(e.localMetrics.textContent, /not proof of physical speaker alignment/);
+  await e.stop.onclick(); assert.equal(e.routeReminder.hidden, false); assert.equal(e.localEnabled.disabled, false);
+  assert.equal(e.start.disabled, false);
+  model.offline(true); await model.refresh(); assert.match(e.localStatus.textContent, /unavailable/);
+});
+
+test('local saved settings restore only their saved explicit acknowledgment', async () => {
+  for (const confirmation of [true, false]) {
+    const model = app({ settings: { host_ip: '192.0.2.1', receivers: 1, base_port: 5000, latency_ms: 40, capture_device: 'virtual', local_output_device: 'speakers', virtual_route_confirmed: confirmation } });
+    const e = model.elements; await model.settle();
+    assert.equal(e.localEnabled.checked, true); assert.equal(e.device.value, 'virtual'); assert.equal(e.localOutput.value, 'speakers');
+    assert.equal(e.routeConfirmed.checked, confirmation); assert.equal(e.localOptions.hidden, false);
+    assert.equal(e.start.disabled, !confirmation);
+    assert.equal(e.routeReminder.hidden, false); assert.equal(e.secret.hidden, true);
+  }
 });

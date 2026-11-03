@@ -42,7 +42,9 @@ test('help and version work without native files on any OS', async t => {
   const { root } = fixture(t); fs.rmSync(path.join(root, 'native'), { recursive: true });
   const stdout = stream();
   assert.equal(await run(['--help'], { root, platform: 'linux', stdout }), 0);
-  assert.match(stdout.text, /127\.0\.0\.1/); assert.match(stdout.text, /not delayed or muted/);
+  assert.match(stdout.text, /127\.0\.0\.1/);
+  assert.match(stdout.text, /Default capture does not delay or mute original host audio/);
+  assert.match(stdout.text, /Windows speakers require explicit virtual routing/);
   assert.equal(await run(['--version'], { root, platform: 'linux', stdout }), 0);
   assert.match(stdout.text, /0\.1\.3/);
 });

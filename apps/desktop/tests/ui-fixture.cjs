@@ -9,6 +9,8 @@ const freshState = () => ({
   peers: [], packets: 0, lead_ms: null, capture_allowance_ms: 0,
   capture_peak: 0, source_peak: 0, capture_age_ms: 0,
   receiver_count: 0, prepared: false, windows_supported: true,
+  local_output_enabled: false, local_output_message: 'Not enabled', local_horizon_ms: null,
+  local_concealed_frames: 0, local_late_packets: 0, local_too_far_packets: 0, local_output_peak: 0,
 });
 
 async function fixture() {
@@ -46,7 +48,7 @@ async function fixture() {
     const reply = value => response.end(JSON.stringify(value));
     switch (request.url) {
       case '/api/config':
-        reply({ windows_supported: supported, ui_test: false, interfaces, devices: [{ id: 'headphones', name: 'Headphones' }], prepared_settings: settings });
+        reply({ windows_supported: supported, ui_test: false, interfaces, devices: [{ id: 'virtual', name: 'CABLE Input (test fixture)' }, { id: 'speakers', name: 'Physical speakers (test fixture)' }, { id: 'headphones', name: 'Headphones' }], prepared_settings: settings });
         break;
       case '/api/status':
         if (disconnected) { response.writeHead(503); reply({ error: 'Fixture offline' }); }
@@ -54,7 +56,7 @@ async function fixture() {
         break;
       case '/api/prepare':
         settings = data;
-        state = { ...freshState(), phase: 'prepared', title: 'Your private setup is ready', prepared: true, receiver_count: data.receivers, peers: Array.from({ length: data.receivers }, (_, index) => ({ index, message: 'Not listening yet' })) };
+        state = { ...freshState(), phase: 'prepared', title: 'Your private setup is ready', prepared: true, local_output_enabled: !!data.local_output_device, local_output_message: data.local_output_device ? 'Local output ready (fixture)' : 'Not enabled', receiver_count: data.receivers, peers: Array.from({ length: data.receivers }, (_, index) => ({ index, message: 'Not listening yet' })) };
         reply({ ok: true });
         break;
       case '/api/setup':

@@ -23,6 +23,7 @@ pub struct LeadBudget {
 
 /// Keep 20 ms headroom inside the core's fixed 320 ms reorder window. The chosen
 /// lead is one group-wide value, never an independent receiver epoch offset.
+/// A group has up to eight remote receivers plus the optional local host output.
 /// `preferred_ns` is a minimum preference, not permission to underrun a device.
 /// Round only to a 2.5 ms audio packet, not an arbitrary 10 ms block: all actual
 /// output-batch, capture and network/clock requirements are already included.
@@ -33,7 +34,7 @@ pub fn choose_lead(
 ) -> Result<LeadBudget, &'static str> {
     if !(40_000_000..=250_000_000).contains(&preferred_ns)
         || receivers.is_empty()
-        || receivers.len() > 8
+        || receivers.len() > 9
     {
         return Err("Invalid playback timing budget");
     }
@@ -179,5 +180,27 @@ mod tests {
             slow.lead_ns, 260_000_000,
             "A lower default cannot underbudget slow hardware"
         );
+    }
+    #[test]
+    fn local_host_is_included_with_up_to_eight_remote_outputs() {
+        let mut outputs = vec![
+            OutputBudget {
+                output_horizon_ns: 20_000_000,
+                render_block_ns: 10_000_000
+            };
+            8
+        ];
+        outputs.push(OutputBudget {
+            output_horizon_ns: 150_000_000,
+            render_block_ns: 10_000_000,
+        });
+        assert_eq!(
+            choose_lead(40_000_000, 10_000_000, &outputs)
+                .unwrap()
+                .lead_ns,
+            200_000_000
+        );
+        outputs.push(outputs[0]);
+        assert!(choose_lead(40_000_000, 10_000_000, &outputs).is_err());
     }
 }

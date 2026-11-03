@@ -7,6 +7,8 @@
 pub mod convert;
 #[cfg(windows)]
 mod native;
+#[cfg(any(windows, test))]
+mod timing;
 
 use crossbeam_queue::ArrayQueue;
 use std::fmt;
@@ -98,6 +100,9 @@ impl Default for CaptureConfig {
 #[derive(Clone, Debug)]
 pub struct RenderConfig {
     pub endpoint_id: Option<String>,
+    /// Actual resolved loopback source ID when playing that source locally.
+    /// Requires an explicit, different output. Never fall back to a default sink.
+    pub loopback_source_endpoint_id: Option<String>,
     /// Upper bound for the driver-selected event buffer, not a latency request.
     pub max_buffer_duration_ms: u32,
     /// Measured signed device/acoustic correction. Positive means sound arrives later.
@@ -108,6 +113,7 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             endpoint_id: None,
+            loopback_source_endpoint_id: None,
             max_buffer_duration_ms: 200,
             extra_output_delay_ns: 0,
         }
@@ -179,6 +185,9 @@ impl Drop for CapturedPacket {
 #[derive(Clone, Copy, Debug)]
 pub struct RenderTiming {
     pub sample_rate: u32,
+    /// QPC nanoseconds sampled immediately before preparing this callback.
+    /// Compare the DAC estimate with this time, never with a Rust Instant epoch.
+    pub callback_qpc_ns: u64,
     /// Estimate for callback frame zero, in this machine's QPC nanosecond domain.
     /// Device clock observations are extrapolated to the stream write cursor.
     /// Includes configured extra_output_delay_ns. Not measured acoustic synchronization.
@@ -186,6 +195,9 @@ pub struct RenderTiming {
     pub clock_position: u64,
     pub clock_frequency: u64,
     pub clock_qpc_ns: u64,
+    /// Both hardware position and its correlated QPC advanced since the previous
+    /// event. False at startup or for a repeated observation; not proof of sound.
+    pub clock_advancing: bool,
     pub queued_frames: u32,
     pub write_cursor_frames: u64,
     pub timestamp_estimated: bool,
@@ -279,6 +291,16 @@ impl RenderStream {
         F: FnMut(RenderTiming, &mut [[f32; 2]]) -> RenderFill + Send + 'static,
     {
         validate_buffer(config.max_buffer_duration_ms)?;
+        if let Some(source) = &config.loopback_source_endpoint_id {
+            let output = config.endpoint_id.as_deref().ok_or_else(|| {
+                AdapterError::new(
+                    ErrorKind::InvalidConfig,
+                    "local playback route",
+                    "synchronized loopback playback requires an explicit output endpoint",
+                )
+            })?;
+            validate_loopback_route(source, output)?;
+        }
         if config.extra_output_delay_ns.unsigned_abs() > 10_000_000_000 {
             return Err(AdapterError::new(
                 ErrorKind::InvalidConfig,
@@ -305,6 +327,56 @@ impl RenderStream {
     pub fn stop(mut self) -> Result<StreamStats, AdapterError> {
         self.worker.stop()
     }
+}
+
+/// Reject a direct loopback feedback path using actual opaque endpoint IDs.
+/// A different ID does not prove the user's external routing is feedback-free:
+/// virtual mixers, Windows Listen, or acoustic recapture still require care.
+pub fn validate_loopback_route(source_id: &str, output_id: &str) -> Result<(), AdapterError> {
+    if source_id.trim().is_empty()
+        || output_id.trim().is_empty()
+        || source_id.contains('\0')
+        || output_id.contains('\0')
+    {
+        return Err(AdapterError::new(
+            ErrorKind::InvalidConfig,
+            "local playback route",
+            "select explicit capture and playback endpoints",
+        ));
+    }
+    // Reject case variations conservatively. IDs remain opaque: no parsing,
+    // friendly-name matching, driver-name heuristic, or default alias is used.
+    if source_id.eq_ignore_ascii_case(output_id) {
+        return Err(AdapterError::new(
+            ErrorKind::InvalidConfig,
+            "local playback route",
+            "capture and playback must use different endpoints to prevent feedback",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn validate_local_output_buffer(
+    buffer_frames: u32,
+    sample_rate: u32,
+    engine_period_ns: u64,
+) -> Result<(), AdapterError> {
+    // Shared-event initialization leaves buffer sizing to Windows. A one-period
+    // endpoint can legitimately be empty at every event; it cannot satisfy this
+    // preview's guarded continuity policy. Reject it before playback starts.
+    if sample_rate == 0
+        || engine_period_ns == 0
+        || u128::from(buffer_frames) * 1_000_000_000
+            < u128::from(sample_rate) * u128::from(engine_period_ns) * 2
+    {
+        return Err(AdapterError::new(
+            ErrorKind::UnsupportedFormat,
+            "local playback buffering",
+            "this output provides less than two engine periods of shared buffering; choose a different speaker endpoint for synchronized playback",
+        ));
+    }
+    Ok(())
 }
 
 /// Enumerate active render endpoints on a dedicated COM-initialized thread.
@@ -390,6 +462,29 @@ mod tests {
         assert_eq!(project_dac_time_ns(1, 1, 1, 1, 0, 0), None);
     }
     #[test]
+    fn clock_projection_preserves_cursor_deadlines_and_checked_bounds() {
+        // Endpoint padding is deliberately absent: data in the engine/driver is
+        // not represented by padding and cannot be discarded from this cursor.
+        let now = 1_000_000_000;
+        assert_eq!(
+            project_dac_time_ns(now, 192_000, 192_000, 48_480, 48_000, 0),
+            Some(now + 10_000_000)
+        );
+        assert_eq!(
+            project_dac_time_ns(now, 192_000, 192_000, 47_520, 48_000, 0),
+            Some(now - 10_000_000)
+        );
+        assert_eq!(project_dac_time_ns(1, 0, 192_000, 0, 48_000, -2), None);
+        assert_eq!(
+            project_dac_time_ns(u64::MAX, 0, 192_000, 48_000, 48_000, 0),
+            None
+        );
+        assert_eq!(
+            project_dac_time_ns(now, 0, 192_000, 480, 48_000, -2_000_000),
+            Some(now + 8_000_000)
+        );
+    }
+    #[test]
     fn capture_packet_storage_recycles_and_is_bounded() {
         let pool = Arc::new(ArrayQueue::new(2));
         pool.push(vec![[0.0; 2]; 480]).unwrap();
@@ -431,6 +526,55 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn loopback_route_requires_distinct_explicit_endpoint_ids() {
+        assert!(validate_loopback_route("virtual-source", "physical-speakers").is_ok());
+        for (source, output) in [
+            ("same", "same"),
+            ("ENDPOINT", "endpoint"),
+            ("", "speakers"),
+            ("source", "  "),
+            ("source\0alias", "speakers"),
+            ("source", "sink\0alias"),
+        ] {
+            assert_eq!(
+                validate_loopback_route(source, output).unwrap_err().kind,
+                ErrorKind::InvalidConfig
+            );
+        }
+        for endpoint_id in [None, Some("SOURCE".into())] {
+            let error = RenderStream::start(
+                RenderConfig {
+                    endpoint_id,
+                    loopback_source_endpoint_id: Some("source".into()),
+                    ..Default::default()
+                },
+                |_, _| RenderFill::Silence,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.kind, ErrorKind::InvalidConfig);
+        }
+    }
+    #[test]
+    fn guarded_local_output_rejects_normal_empty_single_period_buffers() {
+        assert!(validate_local_output_buffer(960, 48_000, 10_000_000).is_ok());
+        assert!(validate_local_output_buffer(1_920, 96_000, 10_000_000).is_ok());
+        for (frames, rate, period) in [
+            (480, 48_000, 10_000_000),
+            (959, 48_000, 10_000_000),
+            (960, 48_000, 0),
+            (960, 0, 10_000_000),
+            (u32::MAX, u32::MAX, u64::MAX),
+        ] {
+            assert_eq!(
+                validate_local_output_buffer(frames, rate, period)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::UnsupportedFormat
+            );
+        }
     }
     #[cfg(not(windows))]
     #[test]

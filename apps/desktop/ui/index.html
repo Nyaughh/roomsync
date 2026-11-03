@@ -11,7 +11,7 @@
   <main>
     <header class="page-header">
       <span class="brand">RoomSync</span>
-      <span class="version">Preview 0.1.4</span>
+      <span class="version">Preview 0.1.5</span>
     </header>
 
     <section class="intro" aria-labelledby="page-title">
@@ -42,8 +42,32 @@
       <details id="advanced" class="disclosure">
         <summary>Advanced settings</summary>
         <div class="disclosure-content">
-          <label for="device">Capture output</label>
-          <select id="device" disabled><option value="">Windows default output</option></select>
+          <label class="check-row" for="localEnabled">
+            <input id="localEnabled" type="checkbox" aria-controls="localOptions" aria-describedby="local-help" disabled>
+            <span>Play through this PC too</span>
+          </label>
+          <p id="local-help" class="hint">Optional. Requires a virtual audio device such as VB-CABLE, installed separately.</p>
+          <label id="deviceLabel" class="capture-label" for="device">Capture output</label>
+          <select id="device" aria-describedby="capture-help" disabled><option value="">Windows default output</option></select>
+          <p id="capture-help" class="hint" hidden>Choose the virtual playback endpoint, such as CABLE Input. Do not choose CABLE Output or your speakers.</p>
+          <div id="localOptions" class="local-options" hidden>
+            <label for="localOutput">Physical speakers</label>
+            <select id="localOutput" aria-describedby="output-help" disabled><option value="">Choose a physical output</option></select>
+            <p id="output-help" class="hint">Choose the actual speakers or headphones RoomSync should play through, not a virtual cable. It must differ from the capture output.</p>
+            <div class="route-guide">
+              <p class="route-title">Set up the route in Windows first</p>
+              <ol>
+                <li>Send your source app or Windows playback to <strong>CABLE Input</strong> (or your virtual playback device).</li>
+                <li>Turn off <strong>Listen to this device</strong> and any other mixer or monitor route for that device. Direct monitoring can cause echo or feedback.</li>
+                <li>Choose that virtual device above, then your physical speakers. Start at a low listening volume.</li>
+              </ol>
+              <p class="hint">RoomSync does not install a driver or change Windows routing. It cannot verify your external mixer or monitoring settings.</p>
+            </div>
+            <label class="check-row confirmation" for="routeConfirmed">
+              <input id="routeConfirmed" type="checkbox" disabled>
+              <span>My source plays only into the selected virtual device, my output is physical speakers or headphones, and Listen/other monitoring is off.</span>
+            </label>
+          </div>
           <div class="advanced-grid">
             <div>
               <label for="port">First host port</label>
@@ -88,6 +112,7 @@
           <span id="statusBadge" class="status-badge">Ready</span>
         </div>
         <p id="message" class="description" role="status">Start listening here and connect in Android, in either order.</p>
+        <p id="localStatus" class="description" hidden></p>
         <div class="actions">
           <button id="start" disabled>Start listening</button>
           <button id="stop" class="secondary" disabled hidden>Stop</button>
@@ -102,13 +127,15 @@
           <p id="detailMessage" class="hint"></p>
           <ul id="peers" class="peer-list"></ul>
           <p id="metrics" class="hint"></p>
+          <p id="localMetrics" class="hint" hidden></p>
           <p class="hint">Keep the RoomSync console open. Pairing waits until you press Stop.</p>
         </div>
       </details>
     </section>
 
     <footer>
-      <p>Keep the PC’s speakers inaudible to avoid echo. Headphones work.</p>
+      <p id="playbackNote">Keep the PC’s speakers inaudible to avoid echo. Headphones work.</p>
+      <p id="routeReminder" class="routing-reminder" hidden>After Stop, Windows routing stays unchanged. Audio still sent to the virtual device may be silent. Switch your app or Windows output back to your physical speakers yourself.</p>
       <details class="disclosure">
         <summary>Privacy &amp; preview notes</summary>
         <p>Local controls. No cloud relay or microphone capture. Codes stay in memory and are shared only when you reveal them. Stop and restart with the same code, or create a new one to replace it.</p>

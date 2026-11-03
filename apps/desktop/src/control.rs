@@ -40,6 +40,10 @@ pub(crate) struct Settings {
     pub receivers: usize,
     pub latency_ms: u64,
     pub capture_device: Option<String>,
+    #[serde(default)]
+    pub local_output_device: Option<String>,
+    #[serde(default)]
+    pub virtual_route_confirmed: bool,
 }
 pub(crate) struct Plan {
     pub settings: Settings,
@@ -62,6 +66,13 @@ pub(crate) struct PublicState {
     pub capture_peak: f32,
     pub source_peak: f32,
     pub capture_age_ms: f64,
+    pub local_output_enabled: bool,
+    pub local_output_message: String,
+    pub local_horizon_ms: Option<f64>,
+    pub local_concealed_frames: u64,
+    pub local_late_packets: u64,
+    pub local_too_far_packets: u64,
+    pub local_output_peak: f32,
     pub receiver_count: usize,
     pub prepared: bool,
     pub windows_supported: bool,
@@ -141,6 +152,13 @@ impl Controller {
                 capture_peak: 0.0,
                 source_peak: 0.0,
                 capture_age_ms: 0.0,
+                local_output_enabled: false,
+                local_output_message: "Not enabled".into(),
+                local_horizon_ms: None,
+                local_concealed_frames: 0,
+                local_late_packets: 0,
+                local_too_far_packets: 0,
+                local_output_peak: 0.0,
                 receiver_count: 0,
                 prepared: false,
                 windows_supported: cfg!(windows),
@@ -271,11 +289,35 @@ impl Controller {
         {
             return Response::error(400, "Choose a listed capture output");
         }
+        if let Some(output) = &settings.local_output_device {
+            if !self.devices.iter().any(|device| &device.id == output) {
+                return Response::error(400, "Choose a listed physical speaker output");
+            }
+            let Some(source) = &settings.capture_device else {
+                return Response::error(
+                    400,
+                    "Local synchronized speakers require an explicitly selected virtual capture output",
+                );
+            };
+            if !settings.virtual_route_confirmed {
+                return Response::error(
+                    400,
+                    "Confirm the virtual source routing and that other monitoring is off before enabling local speakers",
+                );
+            }
+            if roomsync_windows::validate_loopback_route(source, output).is_err() {
+                return Response::error(
+                    400,
+                    "Capture and speaker output must be different devices to prevent feedback",
+                );
+            }
+        }
         let key = match PairingKey::generate() {
             Ok(key) => key.to_hex_for_storage(),
             Err(_) => return Response::error(500, "Secure random source unavailable"),
         };
         let count = settings.receivers;
+        let local_enabled = settings.local_output_device.is_some();
         self.prepared = Some(Plan { settings, key });
         update(&self.state, |s| {
             s.prepared = true;
@@ -289,6 +331,18 @@ impl Controller {
             s.capture_peak = 0.0;
             s.source_peak = 0.0;
             s.capture_age_ms = 0.0;
+            s.local_output_enabled = local_enabled;
+            s.local_output_message = if s.local_output_enabled {
+                "Waiting to calibrate"
+            } else {
+                "Not enabled"
+            }
+            .into();
+            s.local_horizon_ms = None;
+            s.local_concealed_frames = 0;
+            s.local_late_packets = 0;
+            s.local_too_far_packets = 0;
+            s.local_output_peak = 0.0;
             s.peers = (0..count)
                 .map(|index| PeerState {
                     index,
@@ -367,6 +421,18 @@ impl Controller {
             s.capture_peak = 0.0;
             s.source_peak = 0.0;
             s.capture_age_ms = 0.0;
+            s.local_output_enabled = plan.settings.local_output_device.is_some();
+            s.local_output_message = if s.local_output_enabled {
+                "Waiting to calibrate"
+            } else {
+                "Not enabled"
+            }
+            .into();
+            s.local_horizon_ms = None;
+            s.local_concealed_frames = 0;
+            s.local_late_packets = 0;
+            s.local_too_far_packets = 0;
+            s.local_output_peak = 0.0;
             for peer in &mut s.peers {
                 peer.message = "Opening listener".into();
             }
@@ -376,6 +442,14 @@ impl Controller {
             .spawn(move || {
                 let result = crate::control_host::run(plan, cancel.clone(), state.clone());
                 update(&state, |s| {
+                    if s.local_output_enabled {
+                        s.local_output_message = if result.is_ok() {
+                            "Stopped"
+                        } else {
+                            "Stopped: check the session error"
+                        }
+                        .into();
+                    }
                     if cancel.load(Ordering::Acquire) && result.is_ok() {
                         s.phase = "prepared".into();
                         s.title = "Stopped".into();
@@ -700,5 +774,61 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(value["payload"], format!("RS1|192.168.1.8|5000|5001|{key}"));
         assert!(value["modules"].as_array().unwrap().len() > 20);
+    }
+    #[test]
+    fn local_speakers_require_explicit_distinct_devices_and_routing_confirmation() {
+        let mut c = Controller::new(43210).unwrap();
+        c.interfaces = vec![Interface {
+            name: "test".into(),
+            address: "192.168.1.8".into(),
+        }];
+        c.devices = vec![
+            Device {
+                id: "virtual-source".into(),
+                name: "CABLE Input".into(),
+            },
+            Device {
+                id: "physical-speakers".into(),
+                name: "Laptop speakers".into(),
+            },
+        ];
+        let base = serde_json::json!({"host_ip":"192.168.1.8","base_port":5000,"receivers":1,"latency_ms":40,"capture_device":"virtual-source","local_output_device":"physical-speakers","virtual_route_confirmed":true});
+        for (field, bad) in [
+            ("capture_device", serde_json::Value::Null),
+            ("local_output_device", serde_json::json!("virtual-source")),
+            ("local_output_device", serde_json::json!("not-listed")),
+            ("virtual_route_confirmed", serde_json::json!(false)),
+        ] {
+            let mut value = base.clone();
+            value[field] = bad;
+            assert_eq!(
+                c.prepare(&serde_json::to_vec(&value).unwrap()).status,
+                400,
+                "{field}"
+            );
+            assert!(c.prepared.is_none());
+        }
+        assert_eq!(c.prepare(&serde_json::to_vec(&base).unwrap()).status, 200);
+        assert!(c.state.lock().unwrap().local_output_enabled);
+        assert_eq!(
+            c.prepared
+                .as_ref()
+                .unwrap()
+                .settings
+                .capture_device
+                .as_deref(),
+            Some("virtual-source")
+        );
+        assert_eq!(
+            c.prepared
+                .as_ref()
+                .unwrap()
+                .settings
+                .local_output_device
+                .as_deref(),
+            Some("physical-speakers")
+        );
+        // Creating setup has not opened a device or started a network worker.
+        assert!(!c.active());
     }
 }

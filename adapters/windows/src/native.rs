@@ -6,19 +6,19 @@ use wasapi::{
 };
 use windows::{
     Win32::{
-        Foundation::HANDLE,
+        Foundation::{HANDLE, S_FALSE, S_OK},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
             AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_DEVICE_INVALIDATED,
             AUDCLNT_E_RESOURCES_INVALIDATED, AUDCLNT_E_SERVICE_NOT_RUNNING,
-            AUDCLNT_E_UNSUPPORTED_FORMAT, IAudioCaptureClient,
+            AUDCLNT_E_UNSUPPORTED_FORMAT, IAudioCaptureClient, IAudioClock,
         },
         System::{
             Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
             Threading::{AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW},
         },
     },
-    core::w,
+    core::{Interface, w},
 };
 
 const MAX_BUFFER_FRAMES: usize = 65_536;
@@ -541,6 +541,29 @@ where
     }
 }
 
+fn read_render_clock(clock: &IAudioClock) -> Result<(u64, u64), AdapterError> {
+    // Generated wrappers turn S_FALSE into Ok(()), losing WASAPI's explicit
+    // inaccurate-reading indication. Preserve the HRESULT and retry at most once.
+    for _ in 0..2 {
+        let mut position = 0;
+        let mut timestamp = 0;
+        // SAFETY: a live IAudioClock and valid output pointers on its COM thread.
+        let result =
+            unsafe { (clock.vtable().GetPosition)(clock.as_raw(), &mut position, &mut timestamp) };
+        if result == S_OK {
+            return Ok((position, timestamp));
+        }
+        if result != S_FALSE {
+            return Err(win_error("get render clock", result.into()));
+        }
+    }
+    Err(AdapterError::new(
+        ErrorKind::ReopenRequired,
+        "render clock",
+        "device could not supply an accurate clock reading; reconnect playback",
+    ))
+}
+
 fn render_loop<F>(
     config: RenderConfig,
     mut callback: F,
@@ -559,18 +582,27 @@ where
         false,
         config.max_buffer_duration_ms,
     )?;
+    if let Some(source) = config.loopback_source_endpoint_id.as_deref() {
+        // Check the resolved device, not only the caller's requested string.
+        // No audio has been primed or started at this point.
+        validate_loopback_route(source, &info.id)?;
+        validate_local_output_buffer(
+            info.buffer_frames,
+            info.stream_sample_rate,
+            info.engine_period_ns,
+        )?;
+    }
     let client = &stream.client;
     let event = &stream.event;
     info.mmcss_enabled = mmcss.0.is_some();
     let render = client
         .get_audiorenderclient()
         .map_err(|e| api_error("get render service", e))?;
-    let clock = client
-        .get_audioclock()
-        .map_err(|e| api_error("get audio clock", e))?;
-    let frequency = clock
-        .get_frequency()
-        .map_err(|e| api_error("get audio clock frequency", e))?;
+    // SAFETY: the initialized render client supplies an owned IAudioClock.
+    let clock: IAudioClock = unsafe { client.as_iaudioclient().GetService() }
+        .map_err(|e| win_error("get audio clock", e))?;
+    let frequency =
+        unsafe { clock.GetFrequency() }.map_err(|e| win_error("get audio clock frequency", e))?;
     if frequency == 0 {
         return Err(AdapterError::new(
             ErrorKind::InvalidData,
@@ -598,7 +630,8 @@ where
     let _running = Running(client);
     let _ = startup.send(Ok(info.clone()));
     let mut consecutive_timeouts = 0;
-    let mut previous_clock = None;
+    let mut continuity = timing::ClockContinuity::new(qpc_now_ns()?, info.engine_period_ns);
+    let mut clock_started = false;
     while !stop.load(Ordering::Acquire) {
         match event.wait_for_event(100) {
             Ok(()) => consecutive_timeouts = 0,
@@ -634,12 +667,8 @@ where
             ));
         }
         let mut available = (info.buffer_frames - padding) as usize;
-        if available == 0 {
-            continue;
-        }
-        let (position, timestamp) = clock
-            .get_position()
-            .map_err(|e| api_error("get render clock", e))?;
+        // Check even a full buffer: repeated events must not mask a stalled DAC.
+        let (position, timestamp) = read_render_clock(&clock)?;
         let clock_qpc_ns = timestamp.checked_mul(100).ok_or_else(|| {
             AdapterError::new(
                 ErrorKind::InvalidData,
@@ -648,23 +677,30 @@ where
             )
         })?;
         let now = qpc_now_ns()?;
-        if clock_qpc_ns == 0
-            || clock_qpc_ns > now.saturating_add(info.engine_period_ns)
-            || now.saturating_sub(clock_qpc_ns) > 2_000_000_000
-            || previous_clock.is_some_and(|(previous_position, previous_qpc)| {
-                position < previous_position || clock_qpc_ns < previous_qpc
-            })
-        {
+        let clock_advancing = continuity
+            .observe(now, position, clock_qpc_ns)
+            .map_err(|_| {
+                AdapterError::new(
+                    ErrorKind::ReopenRequired,
+                    "render clock",
+                    "device clock is invalid, stale, frozen, or regressing; reconnect playback",
+                )
+            })?;
+        clock_started |= clock_advancing;
+        if available == 0 {
+            continue;
+        }
+        // In synchronized local mode, empty padding makes continuity uncertain:
+        // the engine could have inserted silence not represented by `written`,
+        // even while previously submitted frames remain in flight at the DAC.
+        // A false-positive reconnect is preferable to silently shifted audio.
+        if config.loopback_source_endpoint_id.is_some() && padding == 0 {
+            counters.render_underruns.fetch_add(1, Ordering::Relaxed);
             return Err(AdapterError::new(
                 ErrorKind::ReopenRequired,
-                "render clock",
-                "device returned an invalid, stale, or regressing clock; reopen and reset synchronization",
+                "local playback queue",
+                "playback queue emptied after priming; continuity is uncertain, reconnect or choose another output",
             ));
-        }
-        previous_clock = Some((position, clock_qpc_ns));
-        let mut discontinuity = padding == 0;
-        if discontinuity {
-            counters.render_underruns.fetch_add(1, Ordering::Relaxed);
         }
         let predicted = project_dac_time_ns(
             clock_qpc_ns,
@@ -677,6 +713,7 @@ where
         // Padding excludes engine/driver in-flight data, so it cannot safely be
         // used to invent a new DAC cursor after starvation. Fail closed instead.
         if predicted.is_none_or(|t| t < now) {
+            counters.render_underruns.fetch_add(1, Ordering::Relaxed);
             return Err(AdapterError::new(
                 ErrorKind::ReopenRequired,
                 "render cursor",
@@ -705,16 +742,27 @@ where
             })?;
             let timing = RenderTiming {
                 sample_rate: info.stream_sample_rate,
+                callback_qpc_ns: qpc_now_ns()?,
                 estimated_dac_start_ns: estimated,
                 clock_position: position,
                 clock_frequency: frequency,
                 clock_qpc_ns,
+                clock_advancing,
                 queued_frames: chunk_padding,
                 write_cursor_frames: written,
                 timestamp_estimated: true,
-                discontinuity,
+                // Zero padding is uncertain continuity, not proof of an audible
+                // glitch. Guarded local mode exits above rather than calling back.
+                discontinuity: timing::queue_discontinuity(clock_started, padding),
             };
-            let fill = callback(timing, out);
+            let requested_fill = callback(timing, out);
+            // A stream can report position zero until primed data reaches the DAC.
+            // No user-provided audio is emitted before an advancing observation.
+            let fill = if clock_started {
+                requested_fill
+            } else {
+                RenderFill::Silence
+            };
             let bytes = &mut raw[..count * 8];
             let flags = if fill == RenderFill::Silence {
                 counters
@@ -730,6 +778,40 @@ where
                 convert::encode_stereo_f32(out, bytes)?;
                 None
             };
+            // A slow callback must not enqueue samples tagged for a time that has
+            // already passed. Use the uncorrected hardware deadline, not an
+            // acoustic correction that could hide starvation.
+            let submit_now_ns = qpc_now_ns()?;
+            if project_dac_time_ns(
+                clock_qpc_ns,
+                position,
+                frequency,
+                written,
+                info.stream_sample_rate,
+                0,
+            )
+            .is_none_or(|deadline| deadline <= submit_now_ns)
+            {
+                counters.render_underruns.fetch_add(1, Ordering::Relaxed);
+                return Err(AdapterError::new(
+                    ErrorKind::ReopenRequired,
+                    "render callback deadline",
+                    "render callback missed its DAC timeline; reconnect playback",
+                ));
+            }
+            if config.loopback_source_endpoint_id.is_some()
+                && client
+                    .get_current_padding()
+                    .map_err(|e| api_error("check local playback queue", e))?
+                    == 0
+            {
+                counters.render_underruns.fetch_add(1, Ordering::Relaxed);
+                return Err(AdapterError::new(
+                    ErrorKind::ReopenRequired,
+                    "local playback queue",
+                    "playback queue emptied during callback; reconnect playback",
+                ));
+            }
             render
                 .write_to_device(count, bytes, flags)
                 .map_err(|e| api_error("write render packet", e))?;
@@ -744,7 +826,6 @@ where
             })?;
             chunk_padding += count as u32;
             available -= count;
-            discontinuity = false;
         }
     }
     Ok(())

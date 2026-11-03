@@ -7,10 +7,11 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
-Use Android and Windows **0.1.4** for the lower-buffering setup and startup
-alignment improvements. Protocol revision 3 remains compatible with 0.1.2/0.1.3,
-but older hosts retain their previous minimum-delay settings. Versions older than
-0.1.2 do not support output-budget negotiation.
+Use Windows **0.1.5** with Android **0.1.4**. Windows 0.1.5 adds opt-in local
+speaker playback through a manually configured virtual source. Android does not
+need replacing for this feature. Protocol revision 3 remains compatible with
+0.1.2–0.1.4, but older hosts retain their previous features and delay settings.
+Versions older than 0.1.2 do not support output-budget negotiation.
 
 - Extract the Windows ZIP and open `Start-RoomSync.cmd`. It opens local controls.
   Windows automatically lists its LAN addresses; no phone IP needs typing.
@@ -23,7 +24,8 @@ but older hosts retain their previous minimum-delay settings. Versions older tha
   one common lead for the whole group before a five-second warmup. The default
   minimum is 40 ms; the chosen lead still covers measured device/capture needs
   plus a 30 ms reserve. It is not a 40 ms acoustic-latency promise.
-  Windows' original speaker remains undelayed: keep it inaudible to avoid echo.
+  Optional local Windows playback requires a virtual capture route and a distinct
+  physical output. Without that route, Windows' original speaker remains undelayed.
 - Use a trusted LAN without client isolation. No firewall/interface settings are
   changed automatically. Never publish the setup code or expose UDP ports online.
 
@@ -32,6 +34,7 @@ checksums; do not bypass security warnings for an untrusted download. Real-devic
 capture, playback and acoustic synchronization still require validation.
 
 Instructions: [Windows](apps/desktop/README.md), [Android](apps/android/README.md),
+[Windows speaker routing](docs/WINDOWS_LOCAL_PLAYBACK.md),
 [architecture](docs/ARCHITECTURE.md), [wire record](docs/PROTOCOL.md),
 [transport](adapters/transport/README.md).
 
@@ -44,7 +47,8 @@ Instructions: [Windows](apps/desktop/README.md), [Android](apps/android/README.m
   UDP datagram 542 bytes. PCM payload alone 1.536 Mbit/s per receiver.
 - Pairwise Noise NNpsk0 handshakes, ChaCha20-Poly1305 authenticated encryption,
   authenticated peer admission, replay windows, explicit common stream ID/epoch and bounded queues.
-- WASAPI shared-loopback capture and native playback, requested 48 kHz conversion,
+- WASAPI shared-loopback capture and optional synchronized local playback through
+  a distinct explicitly chosen endpoint, with requested 48 kHz conversion,
   QPC timestamps and hardware-correlated output-time projection. Clock drift and
   capture idle/discontinuity handling preserve a common source timeline.
 - A loopback-only local setup page with offline QR, automatic LAN address selection,
@@ -65,6 +69,9 @@ inputs, extreme timestamps, replay-window-like buffer admission, reorder/loss,
 RTT transitions, stale mappings, independent DAC drift, channel mapping and
 virtual timeline bounds. Desktop tests cover capture packetization, drift,
 per-block timestamp jitter, idle/resume, explicit gaps and command validation.
+Local speaker tests compare nonconstant PCM against a remote renderer at the same
+virtual DAC times, and cover calibration, invalid clocks, bounded queues and route
+validation. These do not execute the physical audio device.
 Live-availability regressions include capture-block completion, network transit
 and different receiver output queues, including the prior all-concealed failure
 when a 100 ms lead was shorter than the output write-ahead requirement.
@@ -103,7 +110,7 @@ outputs out of version control.
 ## npm launcher preview
 
 A dependency-free Windows x64 launcher is in [packages/npm](packages/npm/README.md).
-A verified local tarball supports `npx --package ./roomsync-0.1.4.tgz roomsync start`
+A verified local tarball supports `npx --package ./roomsync-0.1.5.tgz roomsync start`
 or a local global install followed by `roomsync start`. It opens the existing
 localhost setup page; it does not begin sharing audio automatically.
 

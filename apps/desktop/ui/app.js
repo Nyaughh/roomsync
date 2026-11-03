@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const settingIds = ['hostIp', 'count', 'port', 'device', 'latency'];
+const settingIds = ['hostIp', 'count', 'port', 'device', 'latency', 'localEnabled', 'localOutput', 'routeConfirmed'];
 let busy = false;
 let prepared = false;
 let supported = false;
@@ -13,6 +13,7 @@ let online = false;
 let phase = 'idle';
 let statusRequest = 0;
 let appliedStatusRequest = 0;
+let localRouteWasUsed = false;
 
 async function api(path, method = 'GET', body) {
   const response = await fetch(path, {
@@ -43,13 +44,51 @@ function controls() {
   $('prepare').disabled = busy || active || !hasNetwork || !online;
   text('prepare', dirty ? 'Update setup code' : prepared ? 'Create a new code' : 'Create setup code');
   $('prepare').classList.toggle('secondary', prepared && !dirty);
-  $('start').disabled = busy || !prepared || dirty || active || !supported || !online;
+  const localEnabled = $('localEnabled').checked;
+  const routeReady = !localEnabled || ($('device').value && $('localOutput').value
+    && $('device').value !== $('localOutput').value && $('routeConfirmed').checked);
+  $('start').disabled = busy || !prepared || dirty || active || !supported || !online || !routeReady;
   $('start').hidden = active;
   $('stop').disabled = busy || !active || phase === 'stopping';
   $('stop').hidden = !active;
   $('peer').disabled = busy;
   $('reveal').disabled = busy || dirty || !prepared || !online;
   for (const id of settingIds) $(id).disabled = busy || active || !configured;
+  $('localOutput').disabled ||= !localEnabled;
+  $('routeConfirmed').disabled ||= !localEnabled;
+  $('localOptions').hidden = !localEnabled;
+  $('capture-help').hidden = !localEnabled;
+  $('routeReminder').hidden = !localEnabled && !localRouteWasUsed;
+  text('deviceLabel', localEnabled ? 'Virtual capture output' : 'Capture output');
+  text('playbackNote', localEnabled
+    ? 'This PC and Android use one playback timeline. Physical speaker alignment is not yet verified.'
+    : 'Keep the PC’s speakers inaudible to avoid echo. Headphones work.');
+}
+
+function validLocalRoute() {
+  if (!$('localEnabled').checked) return true;
+  $('advanced').open = true;
+  if (!$('device').value) {
+    error('Choose an explicit virtual capture output, such as CABLE Input. Windows default output is not allowed for local speaker playback.');
+    $('device').focus();
+    return false;
+  }
+  if (!$('localOutput').value) {
+    error('Choose the physical speakers or headphones RoomSync should play through.');
+    $('localOutput').focus();
+    return false;
+  }
+  if ($('device').value === $('localOutput').value) {
+    error('Capture and speakers must be different devices. Capturing RoomSync’s own output can cause feedback.');
+    $('localOutput').focus();
+    return false;
+  }
+  if (!$('routeConfirmed').checked) {
+    error('Check the Windows routing steps and confirm that direct monitoring is off before creating the setup code.');
+    $('routeConfirmed').focus();
+    return false;
+  }
+  return true;
 }
 
 function hideSecret() {
@@ -98,6 +137,12 @@ function showStatus(state) {
     ? 'Setup is ready. Starting audio requires the Windows app.'
     : messages[state.phase] || state.message);
   text('detailMessage', state.message);
+  $('localStatus').hidden = !state.local_output_enabled;
+  text('localStatus', state.local_output_enabled ? `This PC: ${state.local_output_message}` : '');
+  $('localMetrics').hidden = !state.local_output_enabled;
+  text('localMetrics', state.local_output_enabled
+    ? `PC output queue ${state.local_horizon_ms == null ? 'not measured yet' : `${state.local_horizon_ms.toFixed(1)} ms`} · Concealed frames ${(state.local_concealed_frames ?? 0).toLocaleString()} · Late packets ${(state.local_late_packets ?? 0).toLocaleString()} · Beyond-window packets ${(state.local_too_far_packets ?? 0).toLocaleString()} · Output peak ${((state.local_output_peak ?? 0) * 100).toFixed(1)}%. Digital output data is not proof of physical speaker alignment.`
+    : '');
   const metrics = state.lead_ms !== null
     ? `Shared lead ${Number.isInteger(state.lead_ms) ? state.lead_ms : state.lead_ms.toFixed(1)} ms · Capture allowance ${state.capture_allowance_ms.toFixed(1)} ms · Source packets ${state.packets.toLocaleString()} · Input peak ${(state.capture_peak * 100).toFixed(1)}% · Encoded peak ${(state.source_peak * 100).toFixed(1)}% · Capture age ${state.capture_age_ms.toFixed(1)} ms`
     : '';
@@ -124,6 +169,7 @@ async function refresh() {
     prepared = state.prepared;
     supported = state.windows_supported;
     phase = state.phase;
+    if (state.local_output_enabled) localRouteWasUsed = true;
     active = ['listening', 'calibrating', 'synchronizing', 'streaming', 'stopping'].includes(phase);
     showStatus(state);
     $('pairing').hidden = !prepared || dirty;
@@ -145,6 +191,8 @@ async function refresh() {
     text('statusBadge', 'Offline');
     $('statusBadge').dataset.phase = 'disconnected';
     text('message', 'Keep the RoomSync console open, or restart the app to reconnect.');
+    if (!$('localStatus').hidden) text('localStatus', 'This PC: Status unavailable while the controller is disconnected.');
+    text('detailMessage', 'Last reported details. The controller connection is currently lost.');
     controls();
   }
 }
@@ -157,12 +205,15 @@ $('prepare').onclick = () => task(async () => {
     invalid.reportValidity();
     return;
   }
+  if (!validLocalRoute()) return;
   await api('/api/prepare', 'POST', {
     host_ip: $('hostIp').value,
     base_port: Number($('port').value),
     receivers: Number($('count').value),
     latency_ms: Number($('latency').value),
     capture_device: $('device').value || null,
+    local_output_device: $('localEnabled').checked ? $('localOutput').value : null,
+    virtual_route_confirmed: $('localEnabled').checked && $('routeConfirmed').checked,
   });
   dirty = false;
   await refresh();
@@ -223,7 +274,10 @@ $('copy').onclick = () => task(async () => {
     supported = initial.windows_supported;
     hasNetwork = initial.interfaces.length > 0;
     $('hostIp').replaceChildren(...initial.interfaces.map(network => new Option(`${network.name} · ${network.address}`, network.address)));
-    for (const device of initial.devices) $('device').add(new Option(device.name, device.id));
+    for (const device of initial.devices) {
+      $('device').add(new Option(device.name, device.id));
+      $('localOutput').add(new Option(device.name, device.id));
+    }
     if (initial.prepared_settings) {
       const settings = initial.prepared_settings;
       $('hostIp').value = settings.host_ip;
@@ -231,6 +285,9 @@ $('copy').onclick = () => task(async () => {
       $('port').value = settings.base_port;
       $('latency').value = settings.latency_ms;
       $('device').value = settings.capture_device || '';
+      $('localEnabled').checked = !!settings.local_output_device;
+      $('localOutput').value = settings.local_output_device || '';
+      $('routeConfirmed').checked = !!settings.local_output_device && settings.virtual_route_confirmed === true;
     }
     const notice = !hasNetwork
       ? 'No local network found. Connect to Wi-Fi or Ethernet and restart RoomSync.'
@@ -251,6 +308,8 @@ $('copy').onclick = () => task(async () => {
 window.addEventListener('pagehide', hideSecret);
 for (const id of settingIds) {
   $(id).addEventListener('input', () => {
+    if (['localEnabled', 'localOutput', 'device'].includes(id)) $('routeConfirmed').checked = false;
+    controls();
     if (!prepared) return;
     dirty = true;
     hideSecret();

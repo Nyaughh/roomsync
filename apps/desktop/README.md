@@ -1,4 +1,4 @@
-# RoomSync Windows desktop preview 0.1.4
+# RoomSync Windows desktop preview 0.1.5
 
 A native Windows audio host with a small local browser control page. The browser
 handles setup and status only; capture, encryption and audio timing remain native
@@ -7,10 +7,10 @@ validation.** This unsigned preview is not a finished consumer release.
 
 ## Windows → Android: simpler setup
 
-Use Android and Windows **0.1.4** for the current lower-buffering defaults and
-startup alignment improvements. Protocol revision 3 remains compatible with
-0.1.2/0.1.3; an older host keeps its prior preferred minimum. Versions older than
-0.1.2 do not report their output timing budget and are incompatible with this flow.
+Use Windows **0.1.5** with Android **0.1.4**. This Windows update adds optional
+local speaker playback; the Android app need not be replaced. Protocol revision 3
+remains compatible with 0.1.2–0.1.4, whose hosts keep their existing features and
+preferred minimums. Versions older than 0.1.2 are incompatible with this flow.
 
 1. Extract the Windows ZIP. Open `Start-RoomSync.cmd`; keep its console open. It
    opens controls on this computer at a random `127.0.0.1` port. If a browser does
@@ -33,9 +33,9 @@ startup alignment improvements. Protocol revision 3 remains compatible with
    Windows automatically chooses one shared lead that covers the slowest queue,
    a full output batch, Windows capture buffering and a 30 ms network/clock reserve.
    It then confirms the timeline and allows a five-second clock warmup. Play
-   ordinary unprotected music. Windows' original
-   output is not muted or delayed, so keep it inaudible, for example with headphones,
-   to avoid echo relative to the phones.
+   ordinary unprotected music. In phone-only mode, Windows' original output is
+   not muted or delayed: keep it inaudible, for example with headphones, to avoid
+   echo. To use the Windows speaker too, configure the optional route below.
 7. **Stop** closes the audio stream and UDP listeners. Start listening again uses
    the same in-memory setup code. Creating a new setup code replaces its secret;
    import the new code on Android. Closing the controller discards its key.
@@ -44,6 +44,21 @@ Each receiver gets its own code selected from the receiver dropdown. Host ports
 are consecutive (default 5000, 5001, ...); Android's local port defaults to 5001.
 Up to eight configured receivers share one timeline. Actual capacity is not measured.
 A receiver leaving after playback starts stops the group in this preview.
+
+## Optional Windows speaker playback
+
+To hear Windows and Android together, use the opt-in local speaker controls in
+Advanced settings with an explicit virtual capture source and a distinct physical
+speaker destination. Follow [Windows local playback](../../docs/WINDOWS_LOCAL_PLAYBACK.md)
+first. RoomSync does not install VB-CABLE or change your Windows/app routing.
+The routing confirmation is required; local playback stays off by default.
+
+The local speaker is measured while silent and included in the same budget and
+packet timeline as the phones. Connection details show its output horizon,
+concealed frames, late/future packets and digital peak. Strict timing guards can
+reject unsupported or uncertain output behavior. Build/tests are not physical
+speaker measurements. After Stop, restore your normal Windows output yourself if
+audio remains routed into the virtual cable.
 
 ## Connection status is evidence, not a guess
 

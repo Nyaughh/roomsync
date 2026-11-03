@@ -85,23 +85,29 @@ frequency responses and acoustic propagation delays.
   actually implemented and distinguish build tests from hardware validation.
   Bluetooth adds output buffering outside this core's control.
 
-## Host-speaker routing is not implemented
+## Optional synchronized host speaker
 
-Endpoint loopback observes the mix already sent toward the physical output. It
-does not withhold the original sound while RoomSync buffers the remote copies.
-Default loopback is tapped before endpoint volume/mute, but muting that endpoint
-also silences RoomSync's delayed replay on the same endpoint. Process loopback
-can exclude RoomSync's process to prevent feedback; it does not provide a
-suppress-original-playback option. Arbitrary system audio needs an independently
-silent source route, such as a properly signed virtual endpoint, before both
-host and phones can render the delayed stream. That routing/driver work is not
-included in this preview. A source owned by RoomSync could be delayed directly,
-but that would not cover arbitrary Spotify or system audio.
+The interactive host can capture an explicit virtual render endpoint (such as
+VB-CABLE's CABLE Input) while rendering to a different explicit physical output.
+Local output calibrates its advancing hardware-correlated QPC timing while silent,
+contributes its measured queue to the same group budget, then consumes the exact
+same PCM packets and presentation epoch as the remote receivers. Host rendering
+uses the identity host-clock mapping; there is no independent local epoch offset.
+Its renderer is allocated before the callback and transferred through a bounded
+mailbox. Callback packet work and output storage are bounded and lock-free.
 
-Microsoft references:
-- https://learn.microsoft.com/en-us/windows/win32/api/audioclient/ne-audioclient-audclnt_streamoptions
-- https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/
-- https://learn.microsoft.com/en-us/samples/microsoft/windows-driver-samples/sysvad-virtual-audio-device-driver-sample/
+The app checks explicit, distinct requested/resolved endpoint IDs and requires
+confirmation that the source really is routed virtually with other monitoring
+off. It does not install drivers, change default devices, mute endpoints or
+restore the user's external routing when stopped. Endpoint loopback does not
+withhold audio still sent directly to a physical output; phone-only mode retains
+that original-output limitation.
+
+The native adapter uses a conservative two-engine-period buffer compatibility
+check and stops on uncertain post-prime continuity. That policy is not a Windows
+requirement and can reject otherwise usable endpoints. Physical synchronization
+and compatibility remain unverified. See [Windows local playback](WINDOWS_LOCAL_PLAYBACK.md)
+for setup, error behavior and limits.
 
 ## Required pre-release gates
 
