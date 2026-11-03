@@ -77,16 +77,19 @@ fn receiver_can_start_before_host_and_keep_its_original_port() {
     watchdog(stop.clone());
     let receiver_stop = stop.clone();
     let receiver = thread::spawn(move || {
-        endpoint
-            .join_cancellable(MonotonicClock::default(), &receiver_stop, |_| {})
-            .unwrap()
+        endpoint.join_cancellable(MonotonicClock::default(), &receiver_stop, |_| {})
     });
     thread::sleep(Duration::from_millis(450));
-    let host = Endpoint::bind_listener(host_addr, key(), config())
+    let mut host = Endpoint::bind_listener(host_addr, key(), config())
         .unwrap()
         .accept_waiting(MonotonicClock::default(), &stop, |_| {})
         .unwrap();
-    let receiver = receiver.join().unwrap();
+    // accept_waiting means the host authenticated READY, not that the peer has
+    // received ACCEPTED. Keep servicing ACK retries exactly as the app does.
+    while !receiver.is_finished() && !stop.load(Ordering::Acquire) {
+        host.poll(Duration::from_millis(5)).unwrap();
+    }
+    let receiver = receiver.join().unwrap().unwrap();
     assert_eq!(receiver.local_addr().unwrap(), original);
     assert_eq!(host.peer_addr(), original);
 }

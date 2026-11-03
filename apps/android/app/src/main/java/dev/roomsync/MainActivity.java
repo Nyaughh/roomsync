@@ -24,7 +24,7 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle state){
         super.onCreate(state);getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         ScrollView scroll=new ScrollView(this);LinearLayout body=new LinearLayout(this);body.setOrientation(LinearLayout.VERTICAL);body.setPadding(dp(24),dp(28),dp(24),dp(32));body.setBackgroundColor(Color.rgb(247,246,242));scroll.addView(body);
-        text(body,"ROOMSYNC  •  0.1.2",14,Color.rgb(21,125,111));text(body,"Connect this phone",29,Color.rgb(27,38,35));
+        text(body,"ROOMSYNC  •  0.1.3",14,Color.rgb(21,125,111));text(body,"Connect this phone",29,Color.rgb(27,38,35));
         text(body,"1. Open RoomSync on Windows.\n2. Scan its QR code, or paste its private setup code.\n3. Tap Connect. Either app can be started first.",16,Color.DKGRAY);
         addresses=text(body,"This phone’s IPv4 addresses:\n"+LocalAddresses.describe(),15,Color.rgb(21,80,70));
         Button scan=button(body,"Scan Windows QR code");scan.setOnClickListener(v->startActivityForResult(new Intent(this,ScanActivity.class),21));

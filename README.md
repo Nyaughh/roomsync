@@ -7,7 +7,9 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
-Update both the Windows host and Android receiver to **0.1.2**.
+Use Android **0.1.3** with a Windows **0.1.2 or 0.1.3** host. Windows 0.1.3 is
+optional for an existing 0.1.2 setup; this pairing-reliability fix keeps the same
+protocol. Versions older than 0.1.2 do not support output-budget negotiation.
 
 - Extract the Windows ZIP and open `Start-RoomSync.cmd`. It opens local controls.
   Windows automatically lists its LAN addresses; no phone IP needs typing.

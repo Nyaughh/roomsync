@@ -1,14 +1,19 @@
-# RoomSync Android receiver 0.1.2
+# RoomSync Android receiver 0.1.3
 
 An installable Android 8.0+ receiver using the shared Rust audio/timing core and
 Noise-PSK encrypted UDP. The APK includes **arm64-v8a** and **x86_64** libraries.
 32-bit-only ARM phones are not supported by this preview.
 
-**Update both Windows and Android to 0.1.2.** Interactive pairing now uses a v3
+**Android 0.1.3 works with Windows 0.1.2 or 0.1.3.** For this pairing fix, you
+can update only Android; the matching Windows 0.1.3 download is optional. Builds
+older than 0.1.2 need both apps updated. Interactive pairing uses the unchanged v3
 handshake and an authenticated playback timeline negotiated after pairing.
 The old five-second Connect window has been removed; either app can start first.
-The Android package is versionCode 3, signed with the same project debug certificate
-as 0.1.0/0.1.1, so the supplied update can install over that version without uninstalling.
+The Android package is versionCode 4, signed with the same project debug certificate
+as 0.1.0/0.1.1/0.1.2, so the supplied update can install over that version without uninstalling.
+
+0.1.3 updates pairing retry handling around handshake phase deadlines. Android
+playback, output calibration, and focus handling are unchanged from 0.1.2.
 
 ## First connection
 

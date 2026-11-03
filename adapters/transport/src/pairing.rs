@@ -278,10 +278,15 @@ impl Endpoint {
                     report.status.confirmations_sent += 1;
                 }
                 let mut next_ready = Instant::now() + retry;
+                // WELCOME was authenticated with the fresh Noise state. Give
+                // READY/ACCEPTED its own bounded phase budget; reusing HELLO's
+                // deadline can discard keys after the host already accepted us.
+                // No duplicate or unauthenticated packet extends this deadline.
+                let confirmation_deadline = Instant::now() + self.config.handshake_timeout;
                 report.status.stage = PairingStage::Confirming;
                 loop {
                     report.check()?;
-                    if Instant::now() >= deadline {
+                    if Instant::now() >= confirmation_deadline {
                         continue 'attempt;
                     }
                     if Instant::now() >= next_ready {
@@ -295,7 +300,7 @@ impl Endpoint {
                         &mut bytes,
                         next_ready
                             .saturating_duration_since(Instant::now())
-                            .min(deadline.saturating_duration_since(Instant::now())),
+                            .min(confirmation_deadline.saturating_duration_since(Instant::now())),
                     )?
                     else {
                         continue;

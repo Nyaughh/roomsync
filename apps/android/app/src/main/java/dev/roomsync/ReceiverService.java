@@ -63,7 +63,7 @@ public final class ReceiverService extends Service {
         }catch(Exception e){config.erase();status="Stopped: "+e.getMessage();running=false;cleanup();stopSelf();}
         return START_NOT_STICKY;
     }
-    static String diagnostics(){return "RoomSync Android 0.1.2 (3)\nAndroid "+Build.VERSION.RELEASE+" / API "+Build.VERSION.SDK_INT+"\nLocal IPv4 addresses:\n"+LocalAddresses.describe()+"\n\n"+status+"\nNo pairing key is included.";}
+    static String diagnostics(){return "RoomSync Android 0.1.3 (4)\nAndroid "+Build.VERSION.RELEASE+" / API "+Build.VERSION.SDK_INT+"\nLocal IPv4 addresses:\n"+LocalAddresses.describe()+"\n\n"+status+"\nNo pairing key is included.";}
     private Notification notification(){
         PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,ReceiverService.class).setAction(STOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);

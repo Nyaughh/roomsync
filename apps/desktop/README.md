@@ -1,4 +1,4 @@
-# RoomSync Windows desktop preview 0.1.2
+# RoomSync Windows desktop preview 0.1.3
 
 A native Windows audio host with a small local browser control page. The browser
 handles setup and status only; capture, encryption and audio timing remain native
@@ -7,8 +7,10 @@ validation.** This unsigned preview is not a finished consumer release.
 
 ## Windows → Android: simpler setup
 
-Update **both** apps to 0.1.2. The new authenticated pairing flow is not compatible
-with earlier receivers that do not report their output timing budget.
+Use Android **0.1.3**. An existing Windows **0.1.2** host remains compatible;
+replacing it with Windows 0.1.3 is optional. The pairing-reliability fix does not
+change protocol revision 3. Versions older than 0.1.2 do not report their output
+timing budget and are incompatible with this flow.
 
 1. Extract the Windows ZIP. Open `Start-RoomSync.cmd`; keep its console open. It
    opens controls on this computer at a random `127.0.0.1` port. If a browser does
