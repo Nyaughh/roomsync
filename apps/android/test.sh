@@ -9,6 +9,9 @@ java -m jdk.compiler/com.sun.tools.javac.Main -d "$ROOT/build/test-classes" "$RO
 java -cp "$ROOT/build/test-classes" dev.roomsync.TimingTest
 java -cp "$ROOT/build/test-classes" dev.roomsync.OutputBudgetTest
 java -cp "$ROOT/build/test-classes" dev.roomsync.FocusStateTest
+java -m jdk.compiler/com.sun.tools.javac.Main -d "$ROOT/build/test-classes" "$ROOT/app/src/main/java/dev/roomsync/UiState.java" "$ROOT/tests/UiStateTest.java" "$ROOT/app/src/main/java/dev/roomsync/QueueTuner.java" "$ROOT/tests/QueueTunerTest.java"
+java -cp "$ROOT/build/test-classes" dev.roomsync.UiStateTest
+java -cp "$ROOT/build/test-classes" dev.roomsync.QueueTunerTest
 cargo build --locked --manifest-path "$ROOT/native/Cargo.toml"
 java -m jdk.compiler/com.sun.tools.javac.Main -d "$ROOT/build/test-classes" "$ROOT/app/src/main/java/dev/roomsync/NativeReceiver.java" "$ROOT/tests/NativeSmoke.java"
 java -Djava.library.path="$ROOT/native/target/debug" -cp "$ROOT/build/test-classes" dev.roomsync.NativeSmoke

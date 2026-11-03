@@ -192,7 +192,7 @@ pub fn run(plan: Plan, cancel: Arc<AtomicBool>, state: SharedState) -> Result<()
             &outputs,
         )?;
         update(&state, |s| {
-            s.lead_ms = Some(budget.lead_ns / 1_000_000);
+            s.lead_ms = Some(budget.lead_ns as f64 / 1_000_000.0);
             s.capture_allowance_ms = capture_allowance as f64 / 1e6;
         });
         let mut random = [0u8; 8];

@@ -3,6 +3,7 @@ package dev.roomsync;
 /** Measured next-write horizon, not AudioTrack buffer capacity or wall-clock guesses. */
 final class OutputBudget {
     static final long BLOCK_NS=10_000_000L;
+    static final long STARTUP_TIMEOUT_NS=5_000_000_000L;
     private long firstNs=-1, firstObservation=-1, firstAdvance, maxHorizon, frozen=-1;
     private long excessSince=-1;
 
@@ -25,6 +26,12 @@ final class OutputBudget {
             return true;
         }
         return false;
+    }
+    boolean canPublish(long nowNs,long startedNs,int expectedUnderruns,int observedUnderruns){
+        if(!ready())throw new IllegalStateException("Output calibration is incomplete");
+        if(nowNs-startedNs>STARTUP_TIMEOUT_NS)throw new IllegalStateException("Audio output could not stabilize within five seconds. Try a different output.");
+        if(observedUnderruns<expectedUnderruns)throw new IllegalStateException("Audio output timeline changed. Reconnect to recalibrate.");
+        return observedUnderruns==expectedUnderruns;
     }
     boolean ready(){return frozen>=0;}
     long horizonNs(){if(!ready())throw new IllegalStateException("Output calibration is incomplete");return frozen;}

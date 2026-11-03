@@ -45,8 +45,17 @@ with zipfile.ZipFile(b/'unsigned.apk','a') as z:
     for p in sorted((b/'apk').glob('lib/*/*.so')): z.write(p,p.relative_to(b/'apk'),compress_type=zipfile.ZIP_STORED)
 PY
 "$BT/zipalign" -P 16 -f 4 "$BUILD/unsigned.apk" "$BUILD/aligned.apk"
+if [[ "${ROOMSYNC_UNSIGNED_ONLY:-0}" == 1 ]]; then
+    cp "$BUILD/aligned.apk" "$BUILD/RoomSync-unsigned.apk"
+    "$BT/zipalign" -c -P 16 4 "$BUILD/RoomSync-unsigned.apk"
+    sha256sum "$BUILD/RoomSync-unsigned.apk"
+    echo "Built unsigned verification APK. It cannot be installed until signed."
+    exit 0
+fi
 KEY="${ROOMSYNC_DEBUG_KEYSTORE:-$BUILD/debug.keystore}"
 if [[ ! -f "$KEY" ]]; then
+    [[ "${ROOMSYNC_ALLOW_NEW_DEBUG_KEY:-0}" == 1 ]] || { echo "Signing key missing. Restore the original keystore for an in-place update. Use ROOMSYNC_UNSIGNED_ONLY=1 to verify compilation. A new key cannot update an existing install." >&2; exit 1; }
+    echo "Creating a NEW debug signing identity. This APK cannot update an app signed by the lost key." >&2
     keytool -genkeypair -keystore "$KEY" -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 3650 -dname 'CN=RoomSync Debug,O=RoomSync,C=US' >/dev/null
     chmod 600 "$KEY"
 fi

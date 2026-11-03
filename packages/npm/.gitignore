@@ -1,0 +1,5 @@
+native/manifest.json
+native/win32-x64/*.exe
+THIRD_PARTY_NOTICES.txt
+*.tgz
+node_modules/

@@ -22,8 +22,16 @@ struct ResultStats {
 }
 
 fn live_pipeline(lead_ms: u64, horizon_ms: u64, network_ms: u64) -> ResultStats {
+    live_pipeline_ns(
+        lead_ms * 1_000_000,
+        horizon_ms * 1_000_000,
+        network_ms * 1_000_000,
+    )
+}
+
+fn live_pipeline_ns(lead_ns: u64, horizon_ns: u64, network_ns: u64) -> ResultStats {
     let epoch = 5_000_000_000_u64;
-    let mut packetizer = CapturePacketizer::new(1, epoch - lead_ms * 1_000_000).unwrap();
+    let mut packetizer = CapturePacketizer::new(1, epoch - lead_ns).unwrap();
     let mut events = Vec::new();
     for block in 0..1_000_u64 {
         let timestamp = block * 10_000_000;
@@ -38,7 +46,7 @@ fn live_pipeline(lead_ms: u64, horizon_ms: u64, network_ms: u64) -> ResultStats 
                 let mut encoded = [0; roomsync_core::SESSION_PACKET_BYTES];
                 packet.encode(&mut encoded);
                 let decoded = roomsync_core::AudioPacket::decode(&encoded).unwrap();
-                events.push((timestamp + (10 + network_ms) * 1_000_000, decoded));
+                events.push((timestamp + 10_000_000 + network_ns, decoded));
                 Ok(())
             })
             .unwrap();
@@ -55,13 +63,13 @@ fn live_pipeline(lead_ms: u64, horizon_ms: u64, network_ms: u64) -> ResultStats 
         }
         let report = renderer
             .render(
-                now + horizon_ms * 1_000_000,
+                now + horizon_ns,
                 48_000,
                 ClockModel::identity(),
                 &mut output,
             )
             .unwrap();
-        let dac_start = now + horizon_ms * 1_000_000;
+        let dac_start = now + horizon_ns;
         if (epoch + 1_000_000_000..epoch + 2_000_000_000).contains(&dac_start) {
             same_timeline_samples.extend_from_slice(&output);
         }
@@ -146,8 +154,29 @@ fn render_batch_tail_and_network_delay_are_included() {
         }],
     )
     .unwrap();
-    for network_ms in [0, 5, 20] {
+    for network_ms in [0, 5, 20, 30] {
         let stats = live_pipeline(budget.lead_ns / 1_000_000, 200, network_ms);
         assert_eq!(stats.concealed, 0, "network={network_ms} {stats:?}");
+    }
+}
+
+#[test]
+fn lower_floor_and_packet_rounding_keep_the_actual_capture_to_dac_reserve() {
+    let budget = choose_lead(
+        40_000_000,
+        10_000_000,
+        &[OutputBudget {
+            output_horizon_ns: 17_200_000,
+            render_block_ns: 10_000_000,
+        }],
+    )
+    .unwrap();
+    assert_eq!(budget.lead_ns, 67_500_000);
+    for network_ns in [0, 5_000_000, 20_000_000, 30_000_000] {
+        let stats = live_pipeline_ns(budget.lead_ns, 17_200_000, network_ns);
+        assert_eq!(stats.concealed, 0, "network={network_ns} {stats:?}");
+        assert_eq!(stats.audible, stats.frames, "{stats:?}");
+        assert_eq!(stats.realigned, 0, "{stats:?}");
+        assert_eq!(stats.too_far, 0, "{stats:?}");
     }
 }

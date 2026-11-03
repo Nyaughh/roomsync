@@ -33,8 +33,9 @@ Before the interactive host publishes a timeline, every authenticated receiver
 runs its output silently and reports its calibrated maximum write-ahead horizon
 and complete render-batch duration. The host adds the Windows capture-buffer /
 stream-latency / engine-period allowance and 30 ms for network and clock variation.
-It chooses one common lead, rounded upward to 10 ms. A user preference is only a
-minimum. A requirement above 300 ms is rejected, leaving 20 ms inside the fixed
+It chooses one common lead, rounded upward to the 2.5 ms audio packet. The
+default preferred minimum is 40 ms; measured requirements can raise it, and a
+higher user preference remains respected. A requirement above 300 ms is rejected, leaving 20 ms inside the fixed
 320 ms packet window rather than silently asking for source audio before capture.
 The chosen lead is authenticated with the timeline and validated by receivers.
 A changed calibrated output requirement means restarting the group.
@@ -44,6 +45,12 @@ not just preloaded synthetic audio. It reproduces the former all-concealed outpu
 at 100 ms source lead with a 150 ms receiver queue, then verifies the calibrated
 path, including identical nonconstant PCM at shared DAC times across mixed queues.
 This is virtual timing evidence, not an acoustic synchronization measurement.
+
+During silent warmup, the renderer follows the latest fitted clock directly.
+After the source timeline begins it preserves bounded live-audio slewing and
+fade/re-anchor behavior. This avoids carrying obsolete startup clock estimates
+into the first audible packet; it does not remove network path asymmetry or
+unmeasured hardware/acoustic delays.
 
 The renderer separately estimates the DAC sample clock from correlated presentation timestamps and frame counts, mutes until host-clock lock, mutes stale mappings, and slews small clock-model
 corrections at up to 200 ppm, and reports/fades re-anchors above five milliseconds.

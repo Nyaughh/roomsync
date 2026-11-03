@@ -24,6 +24,12 @@ jobs:
       - run: cargo test --manifest-path adapters/windows/Cargo.toml --all-targets --locked
       - run: cargo test --manifest-path apps/desktop/Cargo.toml --all-targets --locked
       - run: cargo build --manifest-path apps/desktop/Cargo.toml --release --locked
+      - name: Install Node for dependency-free controller state tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check apps/desktop/ui/app.js
+      - run: node --test apps/desktop/tests/ui-state.test.cjs
 
   android-native:
     runs-on: ubuntu-latest

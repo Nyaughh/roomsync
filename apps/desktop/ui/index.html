@@ -1,8 +1,122 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>RoomSync</title><link rel="stylesheet" href="/style.css"></head><body>
-<main><header><span class="brand">RoomSync <small>preview 0.1.3</small></span><span class="badge">Private LAN audio</span></header>
-<section class="intro"><p class="eyebrow">YOUR SPEAKERS, TOGETHER</p><h1>One setup code.<br>No timing race.</h1><p>Keep this window open. Your Android receiver can connect whenever you are ready.</p></section>
-<div class="layout"><section class="card"><div class="number">1</div><h2>Choose your network</h2><label for="hostIp">Windows Wi-Fi / Ethernet address</label><select id="hostIp"></select><p class="hint">Choose the network your phone uses. VPN and virtual adapters may not work.</p><div class="row"><div><label for="count">Receivers</label><select id="count"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option></select></div><div><label for="port">First host port</label><input id="port" type="number" value="5000" min="1024" max="65527"></div></div><details><summary>Audio options</summary><label for="device">Capture output</label><select id="device"><option value="">Windows default output</option></select><label for="latency">Preferred minimum lead (ms)</label><input id="latency" type="number" min="40" max="250" value="100"><p class="hint">The shared lead is raised automatically to cover calibrated device queues. It is not measured acoustic latency.</p></details><button id="prepare">Create private setup code</button><p id="platform" class="hint"></p></section>
-<section class="card"><div class="number">2</div><h2>Connect Android</h2><p>In the updated Android app, paste the whole setup code. Start listening here, then connect on Android. Either order is fine.</p><div id="pairing" hidden><label for="peer">Code for receiver</label><select id="peer"></select><button id="reveal" class="secondary">Show private code / QR</button><div id="secret" hidden><canvas id="qr" width="270" height="270" aria-label="Private pairing QR"></canvas><label for="payload">One complete setup code</label><textarea id="payload" readonly rows="3" spellcheck="false" autocomplete="off"></textarea><button id="copy" class="secondary">Copy setup code</button><p class="hint">Private: share only with your devices. Do not post a screenshot. The QR is generated on this computer.</p></div></div><div class="actions"><button id="start" disabled>Start listening</button><button id="stop" class="secondary" disabled>Stop</button></div><p class="hint">No phone IP, separate key, or ten-second deadline.</p></section></div>
-<section class="status card" aria-live="polite"><div class="status-head"><h2 id="state">Ready to set up</h2><span id="statusBadge" class="badge">Idle</span></div><p id="message">Create a code to get started.</p><ul id="peers"></ul><p id="metrics" class="hint"></p><p id="error" role="alert"></p></section>
-<footer>Windows' original output is not delayed or muted. Keep it inaudible, for example with headphones, to avoid echo. No microphone capture. This preview still needs physical-device synchronization testing.<br>Controls stay on this computer. No cloud relay, remote scripts, or automatic firewall changes.</footer>
-</main><script nonce="__NONCE__">window.ROOMSYNC_CSRF="__CSRF__";</script><script src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>RoomSync</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <span class="brand">RoomSync</span>
+      <span class="version">Preview 0.1.4</span>
+    </header>
+
+    <section class="intro" aria-labelledby="page-title">
+      <h1 id="page-title">Your audio. Together.</h1>
+      <p>Play this PC’s audio on your Android devices.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="setup-title">
+      <div class="section-heading">
+        <h2 id="setup-title">Connect your devices</h2>
+        <span class="local-label">On your Wi-Fi</span>
+      </div>
+      <div class="settings-grid">
+        <div>
+          <label for="hostIp">Network</label>
+          <select id="hostIp" aria-describedby="network-help" disabled></select>
+        </div>
+        <div>
+          <label for="count">Android devices</label>
+          <select id="count" disabled>
+            <option>1</option><option>2</option><option>3</option><option>4</option>
+            <option>5</option><option>6</option><option>7</option><option>8</option>
+          </select>
+        </div>
+      </div>
+      <p id="network-help" class="hint">Use the same Wi-Fi or Ethernet network as your devices.</p>
+
+      <details id="advanced" class="disclosure">
+        <summary>Advanced settings</summary>
+        <div class="disclosure-content">
+          <label for="device">Capture output</label>
+          <select id="device" disabled><option value="">Windows default output</option></select>
+          <div class="advanced-grid">
+            <div>
+              <label for="port">First host port</label>
+              <input id="port" type="number" value="5000" min="1024" max="65527" required disabled>
+            </div>
+            <div>
+              <label for="latency">Minimum audio lead (ms)</label>
+              <input id="latency" type="number" min="40" max="250" value="40" required aria-describedby="lead-help" disabled>
+            </div>
+          </div>
+          <p id="lead-help" class="hint">RoomSync chooses the lowest shared lead that covers measured device queues plus a safety reserve, at or above this minimum. It is not zero latency or measured speaker delay. VPN and virtual networks may not work.</p>
+        </div>
+      </details>
+
+      <button id="prepare" disabled>Create setup code</button>
+      <p id="platform" class="notice" hidden></p>
+
+      <section id="pairing" class="pairing" aria-labelledby="pairing-title" hidden>
+        <h2 id="pairing-title">Pair with Android</h2>
+        <p class="description">Scan the QR or paste the setup code in the Android app.</p>
+        <div class="pairing-actions">
+          <div id="peerField" hidden>
+            <label for="peer">Code for</label>
+            <select id="peer"></select>
+          </div>
+          <button id="reveal" class="secondary" aria-controls="secret" aria-expanded="false">Show private code</button>
+        </div>
+        <div id="secret" class="secret" hidden>
+          <canvas id="qr" width="270" height="270" role="img" aria-label="Private setup QR. You can also copy the complete setup code below."></canvas>
+          <div class="secret-copy">
+            <label for="payload">Private setup code</label>
+            <textarea id="payload" readonly rows="4" spellcheck="false" autocomplete="off"></textarea>
+            <button id="copy" class="secondary">Copy code</button>
+            <p class="hint">Only share with your devices. Don’t post this code or a screenshot. The QR is made locally.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="session" class="session" aria-labelledby="state" hidden>
+        <div class="status-heading">
+          <h2 id="state">Ready to connect</h2>
+          <span id="statusBadge" class="status-badge">Ready</span>
+        </div>
+        <p id="message" class="description" role="status">Start listening here and connect in Android, in either order.</p>
+        <div class="actions">
+          <button id="start" disabled>Start listening</button>
+          <button id="stop" class="secondary" disabled hidden>Stop</button>
+        </div>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <details id="diagnostics" class="disclosure diagnostics" hidden>
+        <summary>Connection details</summary>
+        <div class="disclosure-content">
+          <p id="detailMessage" class="hint"></p>
+          <ul id="peers" class="peer-list"></ul>
+          <p id="metrics" class="hint"></p>
+          <p class="hint">Keep the RoomSync console open. Pairing waits until you press Stop.</p>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      <p>Keep the PC’s speakers inaudible to avoid echo. Headphones work.</p>
+      <details class="disclosure">
+        <summary>Privacy &amp; preview notes</summary>
+        <p>Local controls. No cloud relay or microphone capture. Codes stay in memory and are shared only when you reveal them. Stop and restart with the same code, or create a new one to replace it.</p>
+        <p>Use a trusted local network. Never expose the audio ports to the internet. RoomSync doesn’t change your firewall or mute your PC. This preview still needs physical-device synchronization testing.</p>
+      </details>
+    </footer>
+  </main>
+  <script nonce="__NONCE__">window.ROOMSYNC_CSRF="__CSRF__";</script>
+  <script src="/app.js"></script>
+</body>
+</html>

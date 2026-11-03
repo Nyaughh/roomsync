@@ -1,4 +1,4 @@
-# RoomSync Windows desktop preview 0.1.3
+# RoomSync Windows desktop preview 0.1.4
 
 A native Windows audio host with a small local browser control page. The browser
 handles setup and status only; capture, encryption and audio timing remain native
@@ -7,10 +7,10 @@ validation.** This unsigned preview is not a finished consumer release.
 
 ## Windows → Android: simpler setup
 
-Use Android **0.1.3**. An existing Windows **0.1.2** host remains compatible;
-replacing it with Windows 0.1.3 is optional. The pairing-reliability fix does not
-change protocol revision 3. Versions older than 0.1.2 do not report their output
-timing budget and are incompatible with this flow.
+Use Android and Windows **0.1.4** for the current lower-buffering defaults and
+startup alignment improvements. Protocol revision 3 remains compatible with
+0.1.2/0.1.3; an older host keeps its prior preferred minimum. Versions older than
+0.1.2 do not report their output timing budget and are incompatible with this flow.
 
 1. Extract the Windows ZIP. Open `Start-RoomSync.cmd`; keep its console open. It
    opens controls on this computer at a random `127.0.0.1` port. If a browser does
@@ -20,11 +20,11 @@ timing budget and are incompatible with this flow.
    preferred over recognizable VPN/virtual adapters. If several are available,
    choose the network your phone uses. No phone IP needs typing and no interface
    settings are changed.
-3. Choose the receiver count, then **Create private setup code**. Open **Show private
-   code / QR**. The QR is generated entirely on Windows, with no external service.
+3. Choose the receiver count, then **Create setup code**. Open **Show private code**. The QR is generated entirely on Windows, with no external service.
 4. In the updated Android app, scan the QR or paste the **whole setup code**. Host
    IP, ports and key fill automatically. The code is plain `RS1|...` text, not a
-   web link. Share it only with your receivers; do not post a screenshot.
+   web link. **Copy code** copies the complete value. Share it only with your
+   receivers; do not post a screenshot.
 5. Click **Start listening** in Windows and **Connect** in Android in either order.
    There is **no ten-second deadline**. Windows learns the phone's IP/port only
    after authenticated pairing. Stop cancels waiting. Already-paired phones stay
@@ -56,12 +56,15 @@ The page distinguishes:
   but the final handshake has not completed.
 - Incompatible pairing version: update both apps.
 - Authenticated, calibrating output queues, then shared timeline confirmed.
-- Streaming metrics: selected common lead, capture allowance, peak level of
+- Connection details: selected common lead, capture allowance, peak level of
   captured/encoded PCM and capture-block age. Peaks are digital samples, not
   speaker volume or proof that sound reached a physical output.
 
-The preferred lead in Audio options is a minimum, not a way to override a slower
-receiver. Automatic lead is capped at 300 ms to stay within the fixed 320 ms
+The preferred lead in Advanced settings defaults to 40 ms and is a minimum,
+not a way to override a slower receiver. Measured output queues, capture
+buffering and the full 30 ms network/clock reserve remain covered; lead is
+rounded upward only to a 2.5 ms audio packet. Higher saved/user minimums stay
+respected. A congested network may need a higher minimum to absorb delay spikes. Automatic lead is capped at 300 ms to stay within the fixed 320 ms
 packet window. A device needing more reports an explicit unsupported-output
 error rather than staying connected and silently dropping every sample. Output
 queues that change after calibration require reconnection. These are timestamp
@@ -110,7 +113,14 @@ Build/test:
 cargo test --manifest-path apps/desktop/Cargo.toml --all-targets --locked
 cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets --locked -- -D warnings
 cargo build --manifest-path apps/desktop/Cargo.toml --release --locked
+node --test apps/desktop/tests/ui-state.test.cjs
 ```
+
+The dependency-free controller state tests cover setup, private-code visibility,
+repeated clicks, validation, interruption and saved settings. Optional
+`node --test apps/desktop/tests/ui.test.cjs` requires developer-installed
+Playwright/Chromium and exercises synthetic frontend fixtures, not Windows audio.
+An unexecuted browser suite is not visual verification.
 
 For browser QA on a Linux cloud host, `web-ui-test` supplies an explicitly labeled
 reserved synthetic address and allows setup/QR/security tests. It cannot start

@@ -57,7 +57,7 @@ pub(crate) struct PublicState {
     pub message: String,
     pub peers: Vec<PeerState>,
     pub packets: u64,
-    pub lead_ms: Option<u64>,
+    pub lead_ms: Option<f64>,
     pub capture_allowance_ms: f64,
     pub capture_peak: f32,
     pub source_peak: f32,

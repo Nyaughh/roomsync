@@ -63,7 +63,7 @@ public final class ReceiverService extends Service {
         }catch(Exception e){config.erase();status="Stopped: "+e.getMessage();running=false;cleanup();stopSelf();}
         return START_NOT_STICKY;
     }
-    static String diagnostics(){return "RoomSync Android 0.1.3 (4)\nAndroid "+Build.VERSION.RELEASE+" / API "+Build.VERSION.SDK_INT+"\nLocal IPv4 addresses:\n"+LocalAddresses.describe()+"\n\n"+status+"\nNo pairing key is included.";}
+    static String diagnostics(){return "RoomSync Android 0.1.4 (5)\nAndroid "+Build.VERSION.RELEASE+" / API "+Build.VERSION.SDK_INT+"\nLocal IPv4 addresses:\n"+LocalAddresses.describe()+"\n\n"+status+"\nNo pairing key is included.";}
     private Notification notification(){
         PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,ReceiverService.class).setAction(STOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
@@ -84,6 +84,12 @@ public final class ReceiverService extends Service {
             int bytes=Math.max(min,48_000*8/25); // At least 40 ms, never unbounded.
             track=new AudioTrack.Builder().setAudioAttributes(attributes).setAudioFormat(new AudioFormat.Builder().setSampleRate(48_000).setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build()).setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(bytes).setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY).build();
             if(track.getState()!=AudioTrack.STATE_INITIALIZED)throw new IllegalStateException("AudioTrack initialization failed");
+            int capacity=track.getBufferCapacityInFrames();
+            // Keep the original allocation as backoff capacity, but ask Android
+            // to queue only two render blocks initially. Use the actual size:
+            // the platform can round/clamp the request for its hardware route.
+            int initialQueueResult=track.setBufferSizeInFrames(QueueTuner.initialRequest(capacity));
+            QueueTuner queue=new QueueTuner(capacity,track.getBufferSizeInFrames());
             final AudioTrack routed=track;
             routeListener=router->{if(output!=routed||cancelled)return;AudioDeviceInfo device=routed.getRoutedDevice();if(device==null)return;int next=device.getId();if(routeId>=0&&next!=routeId)cancel("Output route changed. Reconnect to recalibrate.");routeId=next;};
             track.addOnRoutingChangedListener(routeListener,main);
@@ -95,6 +101,13 @@ public final class ReceiverService extends Service {
                 int phase=NativeReceiver.phase(nativeHandle);
                 if(phase<0)throw new IllegalStateException(NativeReceiver.status(nativeHandle));
                 long now=System.nanoTime();
+                if(!budget.ready()&&now-calibrationStarted>OutputBudget.STARTUP_TIMEOUT_NS)throw new IllegalStateException("Audio output could not stabilize within five seconds. Try a different output.");
+                int beforeUnderruns=track.getUnderrunCount();
+                if(beforeUnderruns>lastUnderruns){
+                    if(budget.ready())throw new IllegalStateException("Audio output underrun. Reconnect to re-establish the playback timeline.");
+                    growQueue(track,queue);timing=new Timing();budget=new OutputBudget();hadTiming=false;
+                }
+                lastUnderruns=beforeUnderruns;
                 if(track.getTimestamp(stamp))timing.observe(stamp.framePosition,stamp.nanoTime,now,written);
                 // A fresh prior hardware observation may bridge a failed query;
                 // never invent an anchor or skip rendered frames after lock.
@@ -102,17 +115,36 @@ public final class ReceiverService extends Service {
                 if(dac<0&&hadTiming)throw new IllegalStateException("Audio presentation timing was lost. Reconnect to recalibrate.");
                 if(dac>=0){
                     hadTiming=true;
-                    if(budget.observe(dac,now,timing.advances(),timing.observationNs()))NativeReceiver.reportReadiness(nativeHandle,budget.horizonNs(),OutputBudget.BLOCK_NS);
-                    NativeReceiver.render(nativeHandle,dac,480,block);
+                    if(budget.observe(dac,now,timing.advances(),timing.observationNs())){
+                        // observe() froze only a candidate. A just-detected
+                        // startup underrun must invalidate it before publication.
+                        int latestUnderruns=track.getUnderrunCount();
+                        if(!budget.canPublish(System.nanoTime(),calibrationStarted,lastUnderruns,latestUnderruns)){
+                            growQueue(track,queue);timing=new Timing();budget=new OutputBudget();hadTiming=false;lastUnderruns=latestUnderruns;continue;
+                        }
+                        queue.seal();NativeReceiver.reportReadiness(nativeHandle,budget.horizonNs(),OutputBudget.BLOCK_NS);
+                    }
+                    if(budget.ready())NativeReceiver.render(nativeHandle,dac,480,block);else Arrays.fill(block,0f);
                 }
                 else {Arrays.fill(block,0f);if(timing.expired(now))throw new IllegalStateException("Reliable AudioTrack timestamps unavailable on this output. Try the phone speaker or a wired output.");}
-                if(!budget.ready()&&now-calibrationStarted>5_000_000_000L)throw new IllegalStateException("Audio output latency could not stabilize. Try the phone speaker or wired output, then reconnect.");
+                if(!budget.ready()&&now-calibrationStarted>OutputBudget.STARTUP_TIMEOUT_NS)throw new IllegalStateException("Audio output latency could not stabilize. Try the phone speaker or wired output, then reconnect.");
                 int offset=0;
-                while(!cancelled&&offset<block.length){int n=track.write(block,offset,block.length-offset,AudioTrack.WRITE_BLOCKING);if(n<0)throw new IllegalStateException("AudioTrack write failed ("+n+")");if(n==0){Thread.sleep(2);continue;}if(n%2!=0)throw new IllegalStateException("AudioTrack returned an incomplete stereo frame");offset+=n;written+=n/2;}
+                while(!cancelled&&offset<block.length){
+                    if(!budget.ready()&&System.nanoTime()-calibrationStarted>OutputBudget.STARTUP_TIMEOUT_NS)throw new IllegalStateException("Audio output could not stabilize within five seconds. Try a different output.");
+                    // Nonblocking silence writes keep startup's deadline and
+                    // cancellation enforceable, even if the device stops consuming.
+                    int n=track.write(block,offset,block.length-offset,budget.ready()?AudioTrack.WRITE_BLOCKING:AudioTrack.WRITE_NON_BLOCKING);
+                    if(n<0)throw new IllegalStateException("AudioTrack write failed ("+n+")");
+                    if(n==0){Thread.sleep(2);continue;}
+                    if(n%2!=0)throw new IllegalStateException("AudioTrack returned an incomplete stereo frame");offset+=n;written+=n/2;
+                }
                 int underruns=track.getUnderrunCount();
-                if(hadTiming&&underruns>lastUnderruns)throw new IllegalStateException("Audio output underrun. Reconnect to re-establish the playback timeline.");
+                if(underruns>lastUnderruns){
+                    if(budget.ready())throw new IllegalStateException("Audio output underrun. Reconnect to re-establish the playback timeline.");
+                    growQueue(track,queue);timing=new Timing();budget=new OutputBudget();hadTiming=false;
+                }
                 lastUnderruns=underruns;
-                if(now>=nextStatus){status=(!budget.ready()?"Calibrating measured audio output…":phase==4?"Output calibrated. Waiting for the shared playback timeline…":phase==3?"Rendering against measured audio timestamps":"Waiting for host clock lock…")+"\n"+NativeReceiver.status(nativeHandle)+"\nAudio focus: "+focusState.describe()+"\nAudioTrack buffer: "+track.getBufferSizeInFrames()+" frames · Output underruns: "+underruns+"\nDevice timestamps: "+(dac>=0?"advancing":"not ready");nextStatus=now+500_000_000L;}
+                if(now>=nextStatus){status=(!budget.ready()?"Calibrating measured audio output…":phase==4?"Output calibrated. Waiting for the shared playback timeline…":phase==3?"Rendering against measured audio timestamps":"Waiting for host clock lock…")+"\n"+NativeReceiver.status(nativeHandle)+"\nAudio focus: "+focusState.describe()+"\nAudioTrack queue: "+queue.frames()+" / "+queue.capacity+" frames · Startup adjustments: "+queue.adjustments()+"\nInitial buffer request result: "+initialQueueResult+" · Performance mode: "+track.getPerformanceMode()+" · Output underruns: "+underruns+"\nDevice timestamps: "+(dac>=0?"advancing":"not ready");nextStatus=now+500_000_000L;}
                 // Fresh clock lock should arrive quickly; silence cannot mask a dead calibration forever.
                 if((phase==2||phase==3)&&timelineStarted==0)timelineStarted=now;
                 if(timelineStarted!=0&&phase!=3&&now-timelineStarted>15_000_000_000L)throw new IllegalStateException("Host clock could not stabilize. Check LAN congestion and reconnect.");
@@ -125,6 +157,12 @@ public final class ReceiverService extends Service {
             long handle=nativeHandle;nativeHandle=0;if(handle!=0){try{NativeReceiver.stop(handle);}catch(Throwable ignored){}}
             main.post(()->{worker=null;status=stopReason;running=false;cleanup();stopSelf();});
         }
+    }
+    private static void growQueue(AudioTrack track,QueueTuner queue){
+        int requested=queue.nextRequest();
+        int actual=track.setBufferSizeInFrames(requested);
+        if(actual<0)throw new IllegalStateException("Audio output buffer adjustment was rejected ("+actual+"). Try a different output.");
+        queue.acceptGrowth(track.getBufferSizeInFrames());
     }
     private void onFocusChange(int change){
         if(change==AudioManager.AUDIOFOCUS_GAIN)focusState.gain();

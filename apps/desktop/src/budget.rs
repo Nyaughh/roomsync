@@ -3,7 +3,8 @@
 
 pub const MAX_PLAYOUT_LEAD_NS: u64 = 300_000_000;
 pub const NETWORK_CLOCK_GUARD_NS: u64 = 30_000_000;
-const ROUND_UP_NS: u64 = 10_000_000;
+const ROUND_UP_NS: u64 =
+    roomsync_core::FRAMES_PER_PACKET as u64 * 1_000_000_000 / roomsync_core::SAMPLE_RATE as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutputBudget {
@@ -23,6 +24,8 @@ pub struct LeadBudget {
 /// Keep 20 ms headroom inside the core's fixed 320 ms reorder window. The chosen
 /// lead is one group-wide value, never an independent receiver epoch offset.
 /// `preferred_ns` is a minimum preference, not permission to underrun a device.
+/// Round only to a 2.5 ms audio packet, not an arbitrary 10 ms block: all actual
+/// output-batch, capture and network/clock requirements are already included.
 pub fn choose_lead(
     preferred_ns: u64,
     capture_allowance_ns: u64,
@@ -142,6 +145,39 @@ mod tests {
                 }]
             )
             .is_err()
+        );
+    }
+    #[test]
+    fn packet_rounding_reduces_only_unneeded_delay_not_required_headroom() {
+        let output = [OutputBudget {
+            output_horizon_ns: 17_200_000,
+            render_block_ns: 10_000_000,
+        }];
+        let minimum = choose_lead(40_000_000, 9_300_000, &output).unwrap();
+        assert_eq!(minimum.lead_ns, 67_500_000);
+        assert!(
+            minimum.lead_ns
+                >= minimum.receiver_requirement_ns
+                    + minimum.capture_allowance_ns
+                    + NETWORK_CLOCK_GUARD_NS
+        );
+        let requested = choose_lead(100_000_000, 9_300_000, &output).unwrap();
+        assert_eq!(
+            requested.lead_ns, 100_000_000,
+            "Explicit higher user preferences stay respected"
+        );
+        let slow = choose_lead(
+            40_000_000,
+            20_000_000,
+            &[OutputBudget {
+                output_horizon_ns: 200_000_000,
+                render_block_ns: 10_000_000,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            slow.lead_ns, 260_000_000,
+            "A lower default cannot underbudget slow hardware"
         );
     }
 }

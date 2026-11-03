@@ -1,0 +1,35 @@
+{
+  "name": "roomsync",
+  "version": "0.1.4",
+  "private": true,
+  "description": "RoomSync Windows host preview: start a local control page for private audio sharing",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "roomsync": "bin/roomsync.cjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "native/",
+    "README.md",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "prepack": "node lib/verify.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nyaughh/roomsync.git",
+    "directory": "packages/npm"
+  },
+  "keywords": [
+    "audio",
+    "windows",
+    "wasapi",
+    "roomsync"
+  ]
+}

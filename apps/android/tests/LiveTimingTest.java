@@ -47,9 +47,9 @@ public final class LiveTimingTest {
                 check(!failed,status);check(projectionMisses==0,"Mock AudioTrack writer missed an entire hardware deadline; wall-clock fixture overloaded");if(legacySource)check(observed>0&&audible==0,"Old100ms live source availability must reproduce all-concealed silence");
                 else check(observed>0&&audible>observed*0.95,"A sufficient shared lead must deliver real PCM");
                 check(status.contains("Jitter accepted:")&&status.contains("PCM peak received:"),"Real buffer and PCM diagnostics must be exposed");
-                check(status.contains("Shared lead: "+(preferredMs==100?"200.0":"250.0")+" ms"),"Must use production host lead selection");
+                check(status.contains("Shared lead: "+String.format(java.util.Locale.ROOT,"%.1f",(double)Math.max(preferredMs,horizonMs+50))+" ms"),"Must use production host lead selection");
             }else check(failed&&observed==0,"Unsupported output must fail before audio starts");
         }finally{if(handle!=0){NativeReceiver.cancel(handle);NativeReceiver.stop(handle);}Arrays.fill(key,'\0');if(!host.waitFor(2,TimeUnit.SECONDS)){host.destroyForcibly();host.waitFor();}}
     }
-    public static void main(String[] args)throws Exception{exercise(args[0],100,150,true,true);exercise(args[0],100,150,true,false);exercise(args[0],250,150,true,false);exercise(args[0],100,300,false,false);}
+    public static void main(String[] args)throws Exception{exercise(args[0],40,20,true,false);exercise(args[0],100,150,true,true);exercise(args[0],100,150,true,false);exercise(args[0],250,150,true,false);exercise(args[0],100,300,false,false);}
 }

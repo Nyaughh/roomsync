@@ -1,0 +1,100 @@
+name: npm launcher verification
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  launcher:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test launcher and safety checks (mocked native launch)
+        run: npm --prefix packages/npm test
+  package-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pinned Rust and Windows GNU linker
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --target x86_64-pc-windows-gnu
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gcc-mingw-w64-x86-64
+      - name: Build the same Windows GNU target covered by dependency notices
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build --release --locked --target x86_64-pc-windows-gnu --manifest-path apps/desktop/Cargo.toml
+      - name: Check native/package versions and dependency notice fingerprints
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, tomllib
+          package = json.loads(pathlib.Path('packages/npm/package.json').read_text())
+          native = tomllib.loads(pathlib.Path('apps/desktop/Cargo.toml').read_text())
+          assert package['version'] == native['package']['version'], 'Bump native and npm versions together'
+          notices = pathlib.Path('docs/THIRD_PARTY_NOTICES.txt').read_text()
+          for name in ['apps/desktop/Cargo.lock', 'apps/android/native/Cargo.lock']:
+              digest = hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()
+              assert f'{name}: SHA-256 {digest}' in notices, f'Refresh dependency notices for {name}'
+          PY
+      - name: Reject unbundled runtime DLL dependencies
+        run: |
+          x86_64-w64-mingw32-objdump -p apps/desktop/target/x86_64-pc-windows-gnu/release/roomsync-desktop.exe > imports.txt
+          python3 - <<'PY'
+          import pathlib, re
+          dlls = re.findall(r'DLL Name:\s*(\S+)', pathlib.Path('imports.txt').read_text())
+          assert dlls, 'No PE import table found'
+          allowed = {'kernel32.dll', 'msvcrt.dll', 'ntdll.dll', 'userenv.dll', 'ws2_32.dll',
+                     'bcryptprimitives.dll', 'bcrypt.dll', 'advapi32.dll', 'crypt32.dll',
+                     'avrt.dll', 'combase.dll', 'mmdevapi.dll', 'ole32.dll', 'propsys.dll',
+                     'rpcrt4.dll', 'oleaut32.dll', 'shell32.dll', 'user32.dll', 'gdi32.dll',
+                     'iphlpapi.dll', 'shlwapi.dll'}
+          unknown = [d for d in dlls if d.lower() not in allowed and not d.lower().startswith('api-ms-win-')]
+          assert not unknown, f'Review/bundle new runtime DLL dependencies: {unknown}'
+          print('\n'.join(sorted(set(dlls))))
+          PY
+      - name: Stage verified executable and third-party notices
+        run: |
+          binary=apps/desktop/target/x86_64-pc-windows-gnu/release/roomsync-desktop.exe
+          hash=$(sha256sum "$binary" | cut -d' ' -f1)
+          node packages/npm/scripts/stage-native.cjs --binary "$binary" --notices docs/THIRD_PARTY_NOTICES.txt --source-commit "$GITHUB_SHA" --expected-sha256 "$hash"
+          mkdir -p dist
+      - name: Pack local npm tarball (never publish)
+        run: npm pack ./packages/npm --pack-destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roomsync-npm-preview
+          path: dist/roomsync-*.tgz
+          if-no-files-found: error
+  smoke-windows:
+    needs: package-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: roomsync-npm-preview
+          path: dist
+      - name: Install offline, test command shim, then execute native help (no audio)
+        shell: pwsh
+        run: |
+          $tarball = (Get-ChildItem dist/roomsync-*.tgz | Select-Object -First 1).FullName
+          $prefix = Join-Path $env:RUNNER_TEMP "roomsync-install-test"
+          npm install --global --prefix $prefix --ignore-scripts --offline --no-audit --no-fund $tarball
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $prefix "roomsync.cmd") --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $prefix "roomsync.cmd") doctor
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $prefix "node_modules/roomsync/native/win32-x64/roomsync-desktop.exe") --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

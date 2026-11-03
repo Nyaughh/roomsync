@@ -5,6 +5,11 @@ public final class OutputBudgetTest {
         long base=1_000_000_000L;OutputBudget b=new OutputBudget();
         for(int i=0;i<50;i++){long now=base+i*10_000_000L;check(!b.observe(now+150_000_000L,now,i,now));}
         check(!b.ready());long now=base+500_000_000L;check(b.observe(now+140_000_000L,now,50,now));check(b.horizonNs()==150_000_000L);
+        check(b.canPublish(now,base,0,0));
+        check(!b.canPublish(now,base,0,1)); // Underrun after observe, before publication.
+        boolean lateCandidate=false;try{b.canPublish(base+5_000_000_001L,base,0,0);}catch(IllegalStateException e){lateCandidate=true;}check(lateCandidate);
+        OutputBudget reset=new OutputBudget();for(int i=0;i<50;i++){long t=now+i*10_000_000L;check(!reset.observe(t+160_000_000L,t,i,t));}check(!reset.ready());
+        check(reset.observe(now+660_000_000L,now+500_000_000L,50,now+500_000_000L));
         // One timing outlier is visible but does not falsely kill an otherwise stable route.
         check(!b.observe(now+170_000_000L,now,51,now));now+=10_000_000L;check(!b.observe(now+150_000_000L,now,52,now));
         boolean threw=false;for(int i=0;i<=10;i++){long t=now+i*10_000_000L;try{b.observe(t+170_000_000L,t,53+i,t);}catch(IllegalStateException e){threw=true;}}check(threw);

@@ -1,57 +1,50 @@
-# RoomSync Android receiver 0.1.3
+# RoomSync Android receiver 0.1.4
 
-An installable Android 8.0+ receiver using the shared Rust audio/timing core and
-Noise-PSK encrypted UDP. The APK includes **arm64-v8a** and **x86_64** libraries.
+A minimal Android 8.0+ receiver using the shared Rust audio/timing core and
+Noise-PSK encrypted UDP. The APK supports **arm64-v8a** and **x86_64**.
 32-bit-only ARM phones are not supported by this preview.
 
-**Android 0.1.3 works with Windows 0.1.2 or 0.1.3.** For this pairing fix, you
-can update only Android; the matching Windows 0.1.3 download is optional. Builds
-older than 0.1.2 need both apps updated. Interactive pairing uses the unchanged v3
-handshake and an authenticated playback timeline negotiated after pairing.
-The old five-second Connect window has been removed; either app can start first.
-The Android package is versionCode 4, signed with the same project debug certificate
-as 0.1.0/0.1.1/0.1.2, so the supplied update can install over that version without uninstalling.
+**Installation warning:** the original preview signing key is unavailable. This
+0.1.4 build uses a new debug certificate and **cannot update an existing install**.
+To install it, uninstall the old RoomSync app first, which removes its app data,
+then install this APK and scan the Windows QR code again. Nothing is uninstalled
+automatically. The package is versionCode 5.
 
-0.1.3 updates pairing retry handling around handshake phase deadlines. Android
-playback, output calibration, and focus handling are unchanged from 0.1.2.
+Windows 0.1.2 and newer remain protocol-compatible. Use Windows 0.1.4 for the new
+measured-latency budget improvements. The encrypted revision 3 protocol is unchanged.
 
 ## First connection
 
-1. Put Windows and the phone on the same trusted Wi-Fi/LAN. Open the new Windows
-   RoomSync control page. It supplies the Windows IP and ports automatically; if
-   it lists multiple network adapters, select the one on the phone's LAN.
-2. On Android tap **Scan Windows QR code**. Grant camera permission if you want
-   scanning, then point at the code shown by Windows. Images are decoded on the
-   phone, never saved or uploaded. Alternatively use **Paste setup code**.
-3. The code automatically fills the Windows host IP, host port, receiver port and
-   key. **Do not type the phone's IP into Windows:** the host learns it only after
-   authenticating the receiver. Android displays its own active IPv4 addresses
-   automatically for troubleshooting.
-4. Select the desired output channel, then tap **Connect & play**. Start Windows
-   playback whenever ready. Pairing waits and retries until you stop it. After all
-   expected receivers pair, each plays calibration silence and measures its
-   real output queue. Windows selects one common presentation lead that includes
-   the slowest output, capture batching and a network margin, then assigns a
-   future timeline with a five-second warmup. There is no rushed Connect countdown.
-5. Keep the Windows source output inaudible or use headphones there: its original
-   sound is not automatically muted or delayed, so it can echo against phones.
-   Start ordinary unprotected music at modest volume.
+1. Put Windows and the phone on the same trusted Wi-Fi/LAN. Open RoomSync on
+   Windows and choose the network adapter on the phone's LAN if necessary.
+2. On Android tap **Scan QR code** and scan the code shown by Windows. Camera
+   permission is optional; **Paste setup code** is the alternative. Images are
+   decoded locally and never saved or uploaded.
+3. Tap **Connect**. Windows and the phone exchange their connection details
+   automatically; you do not need to type the phone's IP address.
+4. Each receiver measures its real output queue. Windows chooses one common
+   presentation lead covering the slowest receiver, capture and a network margin,
+   then schedules a shared future start. There is no rushed pairing countdown.
+5. Start ordinary unprotected audio on Windows. Its original output is not
+   automatically muted or delayed, so it can echo against the receiving phone.
 
-Use **Stop** or the notification Stop action to stop receiving. **Retry saved
-pairing** reconnects without retyping the key. Android retains the pairing only in
-process memory, never on disk. **Forget pairing** clears it explicitly; Android
-terminating the process also removes it. Closing a task may leave its process
-cached, so use Forget if you want to remove the saved pairing immediately. For a
-new key or changed host, scan/import again.
+The main screen shows one connection action and a short status. Tap **Disconnect**
+to stop. **Connect** reuses the setup held in app memory. **Change computer** lets
+you scan or paste a different setup.
 
-Manual entry remains available under **Enter or edit settings manually**. The
-first receiver normally uses host port 5000 and phone port 5001; additional phones
-use their own host port shown by Windows. Left and Right duplicate the selected
-channel to both phone output channels; Mono averages the stereo pair.
+**Settings** contains the audio channel, manual setup and **Forget computer**.
+Settings cannot change a running audio session. Left and Right duplicate the
+selected channel to both phone channels; Mono averages the stereo pair. Stereo is
+the default. Manual ports and keys are not shown on the main screen.
+
+Setup is kept only in process memory, never on disk. Forget clears it; Android
+terminating the process also removes it. Closing the app may leave its process
+cached, so use Forget to explicitly remove the setup.
 
 ## If it is still waiting
 
-Use **Copy diagnostics (no key)** on Android and the Windows status. Diagnostics
+Open **Connection details** on Android and use **Copy details**, alongside the
+Windows status. Diagnostics
 show the actual configured host, UDP bind/selected route IP, elapsed wait, attempts,
 HELLO sends, verified replies, confirmation sends and received/rejected packets.
 After pairing they also show the measured next-write DAC horizon, calibrated
@@ -99,8 +92,13 @@ Java AudioTrack plays 48 kHz stereo float PCM. Advancing AudioTimestamp frame/ti
 observations are projected onto the next output frame in the same CLOCK_MONOTONIC
 domain used by Rust. Shared Rust clock synchronization, bounded jitter buffering,
 interpolation and independent DAC drift estimation determine playback. No guessed
-wall-clock deadline is used. Before the playback timeline is selected, the actual
-silence-filled AudioTrack queue is calibrated over at least 500 ms of advancing
+wall-clock deadline is used. Android keeps the original allocation as backoff capacity but initially requests
+an effective two-block (20 ms) queue. The device may round or refuse that size.
+During silence-only startup, underruns grow the queue by one 10 ms block within
+capacity, resetting the timing measurements while retaining the original five-
+second deadline. Readiness publication freezes the queue; later underruns still
+require reconnecting. No claimed latency is inferred from requested buffer size.
+Before the playback timeline is selected, the actual silence-filled AudioTrack queue is calibrated over at least 500 ms of advancing
 hardware observations. Its maximum measured next-write horizon and 10 ms render
 block are sent inside the authenticated session. A common lead is bounded to
 300 ms by the existing 320 ms jitter window; unsupported outputs fail explicitly.
@@ -119,7 +117,7 @@ Microphone transport, call handling and video lip-sync remain out of scope.
 Permissions: Internet (LAN sockets), foreground media playback, notifications,
 playback wake lock, and optional camera for QR scanning. No microphone, contacts,
 location, storage, account, analytics, cloud relay or private backend. The window
-protects setup secrets from screenshots and Recents; use Copy diagnostics instead.
+protects setup secrets from screenshots and Recents; use Copy details instead.
 
 ## Build and test in Linux/cloud
 
@@ -135,6 +133,11 @@ ROOMSYNC_LIVE_TIMING=1 ./apps/android/test.sh # Optional real-time cloud/JNI smo
 ```
 
 Overrides: `ANDROID_NDK_HOME`, `ANDROID_BUILD_TOOLS`, `ROOMSYNC_DEBUG_KEYSTORE`.
+Set `ROOMSYNC_DEBUG_KEYSTORE` to the securely backed-up key for your existing
+installation. A missing key now stops the build rather than silently replacing
+the signing identity. `ROOMSYNC_UNSIGNED_ONLY=1` verifies compilation and packages
+an unsigned APK. `ROOMSYNC_ALLOW_NEW_DEBUG_KEY=1` explicitly permits a new identity
+for a fresh installation; it cannot update an APK signed with a different key.
 The Linux x86_64 build uses aapt2, D8, zipalign and apksigner directly, without
 Gradle/AndroidX. `scripts/fetch-deps.sh` obtains the pinned ZXing JAR from Maven
 Central and checks its SHA-256. Rust dependencies use `native/Cargo.lock`.
@@ -145,7 +148,8 @@ local debug keystore between updates. It is excluded from source control.
 Tests cover Rust formatting/clippy, actual encrypted loopback through clock lock,
 post-pairing timeline ACK and decoded PCM rendering, delayed/unstarted pairing,
 cancel/rebind, JVM timestamp regressions, actual JNI start/render/cancel/stop,
-strict setup parsing/memory forgetting and offline QR decode from camera-format
+plain-language UI states, queue growth/readiness freezing, publication deadline
+and underrun races, strict setup parsing/memory forgetting and offline QR decode from camera-format
 luminance. **Physical Android camera/lifecycle/audio and end-to-end acoustic sync
 are not cloud-validated.** The user's real phone paired after VPN was paused. A subsequent silence failure
 was reproduced in cloud when live capture's presentation lead was shorter than
@@ -158,7 +162,7 @@ scheduling and equal PCM across different hardware queue horizons. Set
 `ROOMSYNC_LIVE_TIMING=1` to run the additional real JNI/encrypted-UDP smoke with
 mock AudioTrack timestamps and the actual desktop packetizer/budget helper.
 It measures Java callback and capture-send lateness, reproduces the old 100 ms
-source-availability failure, checks negotiated 200/250 ms leads, and rejects an
+source-availability failure, checks negotiated 70/200/250 ms leads, and rejects an
 unsupported output before playback. This optional wall-clock test can fail under
 cloud scheduling overload and is not a physical audio-quality certification.
 The smoke retains a >95% nonzero-sample threshold for supported live schedules;
@@ -166,5 +170,6 @@ record its actual concealment and lateness, not just its exit code.
 
 Platform references: [AudioTrack](https://developer.android.com/reference/android/media/AudioTrack),
 [AudioTimestamp](https://developer.android.com/reference/android/media/AudioTimestamp),
+[AudioTrack effective buffer tuning](https://developer.android.com/reference/android/media/AudioTrack#PERFORMANCE_MODE_LOW_LATENCY),
 [foreground playback services](https://developer.android.com/develop/background-work/services/fgs/service-types#media),
 [ZXing](https://github.com/zxing/zxing/tree/zxing-3.5.4).

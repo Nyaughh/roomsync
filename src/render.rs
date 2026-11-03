@@ -37,6 +37,7 @@ pub struct Renderer {
     host_epoch_ns: u64,
     channel_map: ChannelMap,
     cursor: Option<f64>,
+    timeline_started: bool,
     last_good: [f32; 2],
     recovery: u32,
     device_clock: DeviceClockEstimator,
@@ -53,6 +54,7 @@ impl Renderer {
             host_epoch_ns,
             channel_map,
             cursor: None,
+            timeline_started: false,
             last_good: [0.0; 2],
             recovery: RECOVERY_FRAMES,
             device_clock: DeviceClockEstimator::new(),
@@ -108,7 +110,15 @@ impl Renderer {
         let target = clock.host_elapsed_ns(local_dac_start_ns, self.host_epoch_ns)
             * SAMPLE_RATE as f64
             / 1e9;
-        let mut position = self.cursor.unwrap_or(target);
+        // Clock fitting can improve during the silent warmup. There is no
+        // audible continuity to preserve yet: carrying the old phase into the
+        // first sample would leave receivers needlessly out of step for seconds.
+        // Once the source timeline starts, keep the bounded live-audio slew.
+        let mut position = if self.timeline_started {
+            self.cursor.unwrap_or(target)
+        } else {
+            target
+        };
         let error = target - position;
         if error.abs() > REALIGN_FRAMES {
             position = target;
@@ -129,6 +139,7 @@ impl Renderer {
                 report.waiting_frames += 1;
                 [0.0; 2]
             } else {
+                self.timeline_started = true;
                 let index = position.floor() as u64;
                 let fraction = (position - position.floor()) as f32;
                 let a = self.buffer.sample(index);
@@ -235,5 +246,115 @@ mod tests {
             Err(RenderError::UnsupportedSampleRate)
         );
         assert!(out.iter().all(|v| *v == [0.0; 2]));
+    }
+    fn shifted_clock(offset_ns: i64) -> ClockModel {
+        use crate::clock::{ClockExchange, ClockSynchronizer};
+        let mut sync = ClockSynchronizer::new();
+        for index in 0..16 {
+            let t = 1_000_000_000_u64 + index * 100_000_000;
+            sync.observe(ClockExchange {
+                local_send_ns: t,
+                host_receive_ns: t.checked_add_signed(offset_ns).unwrap() + 500_000,
+                host_send_ns: t.checked_add_signed(offset_ns).unwrap() + 600_000,
+                local_receive_ns: t + 1_100_000,
+            })
+            .unwrap();
+        }
+        let model = sync.model().unwrap();
+        assert!(model.is_locked());
+        model
+    }
+
+    #[test]
+    fn warmup_clock_corrections_do_not_leave_initial_speaker_phase_error() {
+        for rate in [48_000, 96_000, 192_000] {
+            for offset in [-2_000_000, 2_000_000] {
+                let epoch = 5_000_000_000;
+                let mut receiver = Renderer::new(1, epoch, ChannelMap::Stereo).unwrap();
+                let mut reference = Renderer::new(1, epoch, ChannelMap::Stereo).unwrap();
+                let mut output = vec![[0.0; 2]; rate as usize / 400];
+                let mut reference_output = output.clone();
+                // Include the interpolation neighbor for oversampled output.
+                for sequence in 0..2 {
+                    let source = AudioPacket::new(1, sequence, *packet().samples()).unwrap();
+                    receiver.push(source.clone());
+                    reference.push(source);
+                }
+                receiver
+                    .render(4_995_000_000, rate, shifted_clock(offset), &mut output)
+                    .unwrap();
+                reference
+                    .render(
+                        4_995_000_000,
+                        rate,
+                        ClockModel::identity(),
+                        &mut reference_output,
+                    )
+                    .unwrap();
+                let corrected = receiver
+                    .render(4_997_500_000, rate, ClockModel::identity(), &mut output)
+                    .unwrap();
+                reference
+                    .render(
+                        4_997_500_000,
+                        rate,
+                        ClockModel::identity(),
+                        &mut reference_output,
+                    )
+                    .unwrap();
+                assert_eq!(corrected.waiting_frames, output.len());
+                assert!(
+                    output.iter().flatten().all(|sample| *sample == 0.0),
+                    "A stale warmup phase must not start audio early"
+                );
+                assert!(!corrected.realigned);
+                assert_eq!(
+                    receiver.source_cursor(),
+                    reference.source_cursor(),
+                    "Before any source audio plays, follow the latest clock instead of slewing an obsolete warmup phase"
+                );
+                let first = receiver
+                    .render(epoch, rate, ClockModel::identity(), &mut output)
+                    .unwrap();
+                reference
+                    .render(epoch, rate, ClockModel::identity(), &mut reference_output)
+                    .unwrap();
+                assert_eq!(first.waiting_frames, 0);
+                assert_eq!(first.concealed_frames, 0);
+                assert!(!first.realigned);
+                assert_eq!(
+                    output, reference_output,
+                    "The first source packet must play at the same DAC time"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn live_clock_correction_still_slews_instead_of_jumping() {
+        let mut receiver = Renderer::new(1, 5_000_000_000, ChannelMap::Stereo).unwrap();
+        let mut output = [[0.0; 2]; 120];
+        receiver
+            .render(
+                5_000_000_000,
+                SAMPLE_RATE,
+                ClockModel::identity(),
+                &mut output,
+            )
+            .unwrap();
+        let report = receiver
+            .render(
+                5_002_500_000,
+                SAMPLE_RATE,
+                shifted_clock(2_000_000),
+                &mut output,
+            )
+            .unwrap();
+        assert!(!report.realigned);
+        let cursor = receiver.source_cursor().unwrap();
+        assert!(
+            (240.0..241.0).contains(&cursor),
+            "Live phase must slew, got {cursor}"
+        );
     }
 }

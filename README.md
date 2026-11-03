@@ -7,9 +7,10 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
-Use Android **0.1.3** with a Windows **0.1.2 or 0.1.3** host. Windows 0.1.3 is
-optional for an existing 0.1.2 setup; this pairing-reliability fix keeps the same
-protocol. Versions older than 0.1.2 do not support output-budget negotiation.
+Use Android and Windows **0.1.4** for the lower-buffering setup and startup
+alignment improvements. Protocol revision 3 remains compatible with 0.1.2/0.1.3,
+but older hosts retain their previous minimum-delay settings. Versions older than
+0.1.2 do not support output-budget negotiation.
 
 - Extract the Windows ZIP and open `Start-RoomSync.cmd`. It opens local controls.
   Windows automatically lists its LAN addresses; no phone IP needs typing.
@@ -19,7 +20,9 @@ protocol. Versions older than 0.1.2 do not support output-budget negotiation.
   with packet/authentication diagnostics rather than a ten-second click deadline.
   Windows learns the phone's source address only after authenticated pairing.
 - Receivers first calibrate their output queues. Windows automatically budgets
-  one common lead for the whole group before a five-second warmup.
+  one common lead for the whole group before a five-second warmup. The default
+  minimum is 40 ms; the chosen lead still covers measured device/capture needs
+  plus a 30 ms reserve. It is not a 40 ms acoustic-latency promise.
   Windows' original speaker remains undelayed: keep it inaudible to avoid echo.
 - Use a trusted LAN without client isolation. No firewall/interface settings are
   changed automatically. Never publish the setup code or expose UDP ports online.
@@ -96,3 +99,15 @@ the repository is not evidence that remote CI has run or passed.
 This private project has no open-source license selected. Third-party dependency
 licenses remain their respective owners' terms. Keep key/signing files and build
 outputs out of version control.
+
+## npm launcher preview
+
+A dependency-free Windows x64 launcher is in [packages/npm](packages/npm/README.md).
+A verified local tarball supports `npx --package ./roomsync-0.1.4.tgz roomsync start`
+or a local global install followed by `roomsync start`. It opens the existing
+localhost setup page; it does not begin sharing audio automatically.
+
+**Not published to npm.** Plain `npx roomsync start` is the intended future command,
+not an available verified release yet. The package remains private/unlicensed until
+its owner explicitly chooses publication, name, access and licensing. No install
+hooks, runtime downloads or npm credentials were added.
