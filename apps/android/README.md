@@ -6,7 +6,7 @@ Noise-PSK encrypted UDP. The APK supports **arm64-v8a** and **x86_64**.
 
 Download [RoomSync.apk](https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk)
 from [the latest GitHub release](https://github.com/Nyaughh/roomsync/releases/latest).
-The repository is private, so GitHub may require sign-in with repository access.
+The APK is publicly downloadable without a GitHub account or sign-in.
 
 **Installing 0.1.7:** this release uses a new retained signing certificate because
 the earlier APK and key could not be recovered. Uninstall older RoomSync previews

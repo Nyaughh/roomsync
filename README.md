@@ -1,6 +1,6 @@
 # RoomSync
 
-**Early, private Windows → Android LAN-audio prototype.** Native code for
+**Early Windows → Android LAN-audio prototype.** Native code for
 capturing ordinary Windows system playback and sending it to multiple receivers
 with a common presentation timeline. Not a finished product, not hardware-certified,
 and never a zero-latency promise. Video/call-specific behavior is deferred.
@@ -9,7 +9,7 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 Download the [latest Android APK](https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk)
 from [GitHub Releases](https://github.com/Nyaughh/roomsync/releases/latest).
-The repository is private; sign in with an account that has access.
+The repository and release downloads are public; no GitHub sign-in is required.
 On Windows x64 with Node.js 20+, run `npx roomsync@latest start`.
 Use `npx roomsync@latest apk` to print the APK link separately.
 
@@ -115,7 +115,7 @@ unsupported-platform errors for real capture/playback. See each adapter/app READ
 for additional native build tools. CI definitions are provided; a definition in
 the repository is not evidence that remote CI has run or passed.
 
-This private project has no open-source license selected. Third-party dependency
+This project has no open-source license selected. Third-party dependency
 licenses remain their respective owners' terms. Keep key/signing files and build
 outputs out of version control.
 

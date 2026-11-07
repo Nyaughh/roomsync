@@ -7,8 +7,8 @@ does not install a virtual driver; optional synchronized Windows speakers requir
 one to be installed and routed separately by the user.
 Requires Node.js 20+ and Windows 10 version 1703 or newer with x64 Node.js.
 The Android receiver app is installed separately. Download [the latest APK](https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk)
-or run `npx roomsync@latest apk`. GitHub sign-in with repository access is required
-while the repository is private. Android **0.1.7** uses a new retained signing key;
+or run `npx roomsync@latest apk`. No GitHub account or sign-in is required to
+download the APK. Android **0.1.7** uses a new retained signing key;
 uninstall older previews once before installing it. Use Android **0.1.6 or newer** for
 the matching receive-side diagnostics; earlier revision-3 receivers remain
 wire-compatible.

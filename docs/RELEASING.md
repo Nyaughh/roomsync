@@ -7,8 +7,8 @@ https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk
 Every release marked **Latest** must include the signed APK under the exact asset
 name `RoomSync.apk`, even if the release also updates the npm launcher. Publish a
 normal GitHub release (the app is still described as a preview), since GitHub's
-`releases/latest` route excludes releases marked as prereleases. Keep the
-repository private unless its owner explicitly changes that choice.
+`releases/latest` route excludes releases marked as prereleases. The repository
+and release downloads are public; verify the APK link without authentication.
 
 1. Bump the npm, desktop Cargo manifest/lock, desktop help and Android manifest
    versions together. Increment Android's versionCode. Refresh the first-party
