@@ -1,12 +1,15 @@
-# RoomSync npm launcher (unpublished preview)
+# RoomSync npm launcher
 
-A small, dependency-free launcher for the **Windows x64 RoomSync 0.1.6 host**.
+A small, dependency-free launcher for the **Windows x64 RoomSync 0.1.7 host**.
 It bundles the native executable and opens its local setup page. No Rust compiler,
 extra runtime download, install script or paid service is needed. The launcher
 does not install a virtual driver; optional synchronized Windows speakers require
 one to be installed and routed separately by the user.
 Requires Node.js 20+ and Windows 10 version 1703 or newer with x64 Node.js.
-The Android receiver app is still installed separately. Use Android **0.1.6** for
+The Android receiver app is installed separately. Download [the latest APK](https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk)
+or run `npx roomsync@latest apk`. GitHub sign-in with repository access is required
+while the repository is private. Android **0.1.7** uses a new retained signing key;
+uninstall older previews once before installing it. Use Android **0.1.6 or newer** for
 the matching receive-side diagnostics; earlier revision-3 receivers remain
 wire-compatible.
 
@@ -16,29 +19,28 @@ separate host dispatch delay from downstream delay, but do not measure Wi-Fi
 transit or prove the physical cause. The shared timeline and playback buffering
 are unchanged by this update.
 
-**This package has not been published to npm.** Do not run plain `npx roomsync`
-until a release and its owner are confirmed; that command resolves a registry
-package name, not this private source repository. The proposed name is not reserved.
-The source package is deliberately `private: true` and `UNLICENSED` pending a
-publication/name/license decision. Third-party notices are included separately.
+**0.1.7 adds the latest APK link on startup, in help, and through `roomsync apk`.**
+Audio behavior is unchanged from 0.1.6. The package is published as `roomsync`
+by `nyaughh` and remains `UNLICENSED`. Third-party notices are included separately.
 
-## Use the preview tarball
+## Run from npm
 
-After obtaining the verified `roomsync-0.1.6.tgz`, in **Windows PowerShell**:
+In **Windows PowerShell**:
 
 ```powershell
-# Run directly from the local tarball, without a global installation:
-npx --package .\roomsync-0.1.6.tgz roomsync start
+# Run the latest published launcher:
+npx roomsync@latest start
+
+# Get the latest Android APK link:
+npx roomsync@latest apk
 
 # Or install the local package, then use the short command:
-npm install --global .\roomsync-0.1.6.tgz
+npm install --global roomsync@latest
 roomsync start
 ```
 
-After an explicitly authorized public release, the intended equivalent is
-`npx roomsync start` or `npm install --global roomsync` followed by `roomsync start`.
-If a scoped package name is chosen instead, its installed command can still be
-`roomsync`; the `npx`/install package name would change.
+For a verified local tarball, use
+`npx --package ./roomsync-0.1.7.tgz roomsync start`.
 
 ## Commands
 
@@ -46,6 +48,7 @@ If a scoped package name is chosen instead, its installed command can still be
 roomsync start               Open the local control page
 roomsync start --no-browser  Start controls and print their address
 roomsync devices             List Windows playback endpoints
+roomsync apk                 Show the latest Android APK download link
 roomsync doctor              Verify platform and packaged-host integrity
 roomsync --version
 roomsync --help
@@ -57,7 +60,7 @@ Create a private setup code, connect the Android receiver and choose **Start
 listening** in the page. No firewall or audio-routing settings change automatically.
 
 macOS, Linux, WSL, Windows 32-bit and native ARM64 Node.js are not supported.
-Help/version and package inspection still work there, but no host is launched.
+Help, version, APK links and package inspection still work there, but no host is launched.
 Use Windows PowerShell/Command Prompt, not a WSL shell.
 
 In default phone-only capture mode, original Windows audio is not muted or delayed.
@@ -148,10 +151,9 @@ passing one does not imply the others passed.
 The repository's npm workflow tests the wrapper on Linux and Windows, builds the
 Windows GNU host, audits DLL imports, stages the bundle and uploads a tarball artifact.
 A separate Windows job installs the artifact and invokes native `--help` without
-starting capture. These future CI jobs have not run merely because this file exists.
-It deliberately
-contains **no publish step, npm credentials, or auto-release**. Publication requires
-a separate owner/account, name, access, licensing and release decision.
+starting capture. It contains **no publish step, npm credentials, or auto-release**.
+Maintainers publish the verified artifact separately.
+See [release instructions](../../docs/RELEASING.md).
 
 References: [npm bin/files metadata](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/),
 [Node child-process execution](https://nodejs.org/api/child_process.html).

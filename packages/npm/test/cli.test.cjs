@@ -35,7 +35,19 @@ test('routes only supported commands and exact option combinations', () => {
   assert.deepEqual(parseArgs(['start', '--no-browser']), { kind: 'native', args: ['web-headless'] });
   assert.deepEqual(parseArgs(['devices']), { kind: 'native', args: ['list-devices'] });
   for (const args of [[], ['help'], ['--help'], ['start', '--help']]) assert.equal(parseArgs(args).kind, 'help');
-  for (const args of [['start', '--bad'], ['start', '--no-browser', '--no-browser'], ['devices', 'extra'], ['--version', 'extra'], ['start;calc'], ['host']]) assert.throws(() => parseArgs(args));
+  for (const args of [['start', '--bad'], ['start', '--no-browser', '--no-browser'], ['devices', 'extra'], ['apk', 'extra'], ['--version', 'extra'], ['start;calc'], ['host']]) assert.throws(() => parseArgs(args));
+});
+
+test('APK download information works without native files or launching a process on any OS', async t => {
+  const { root } = fixture(t);
+  fs.rmSync(path.join(root, 'native'), { recursive: true });
+  for (const [platform, arch] of [['linux', 'x64'], ['darwin', 'arm64'], ['win32', 'x64']]) {
+    const stdout = stream();
+    assert.equal(await run(['apk'], { root, platform, arch, stdout,
+      spawnImpl() { assert.fail('APK information must not launch a process'); } }), 0);
+    assert.match(stdout.text, /https:\/\/github\.com\/Nyaughh\/roomsync\/releases\/latest\/download\/RoomSync\.apk/);
+    assert.match(stdout.text, /Release notes:/);
+  }
 });
 
 test('help and version work without native files on any OS', async t => {
@@ -65,9 +77,9 @@ test('bad arguments are rejected before spawn', async t => {
 });
 
 test('Windows path containing spaces is launched as an argv array without a shell', async t => {
-  const { root } = fixture(t); const proc = mockProcess(); const child = childProcess(); let call;
+  const { root } = fixture(t); const proc = mockProcess(); const child = childProcess(); const stdout = stream(); let call;
   const result = run(['start', '--no-browser'], { root, platform: 'win32', arch: 'x64', processImpl: proc,
-    spawnImpl(...args) { call = args; queueMicrotask(() => { child.exitCode = 7; child.emit('close', 7, null); }); return child; } });
+    stdout, spawnImpl(...args) { assert.match(stdout.text, /Latest Android APK:/); call = args; queueMicrotask(() => { child.exitCode = 7; child.emit('close', 7, null); }); return child; } });
   assert.equal(await result, 7);
   assert.equal(call[0], path.join(root, NATIVE_RELATIVE));
   assert.deepEqual(call[1], ['web-headless']);
@@ -154,9 +166,9 @@ test('third-party notices are required', t => {
   assert.throws(() => verifyPackage(root), /license notices/);
 });
 
-test('package has no dependencies or install hooks and publication is disabled', () => {
+test('published package has no dependencies or install hooks', () => {
   const pkg = require('../package.json');
-  assert.equal(pkg.private, true);
+  assert.notEqual(pkg.private, true);
   for (const field of ['dependencies', 'optionalDependencies', 'devDependencies']) assert.equal(pkg[field], undefined);
   for (const hook of ['preinstall', 'install', 'postinstall', 'prepare']) assert.equal(pkg.scripts[hook], undefined);
   assert.equal(pkg.bin.roomsync, 'bin/roomsync.cjs');

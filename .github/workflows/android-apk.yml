@@ -1,0 +1,42 @@
+name: Android APK
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install pinned Rust and Android SDK components
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --target aarch64-linux-android --target x86_64-linux-android
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Build and verify signed APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ROOMSYNC_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ROOMSYNC_KEY_ALIAS: roomsync
+          ROOMSYNC_DEBUG_KEYSTORE: ${{ runner.temp }}/roomsync.jks
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo 'Missing Android signing key secret'; exit 1; }
+          test -n "$ROOMSYNC_KEYSTORE_PASSWORD" || { echo 'Missing Android signing password secret'; exit 1; }
+          trap 'rm -f "$ROOMSYNC_DEBUG_KEYSTORE"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ROOMSYNC_DEBUG_KEYSTORE"
+          chmod 600 "$ROOMSYNC_DEBUG_KEYSTORE"
+          bash apps/android/build.sh
+          mkdir -p dist
+          cp apps/android/build/RoomSync-debug.apk dist/RoomSync.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/RoomSync.apk > dist/RoomSync-signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging dist/RoomSync.apk > dist/RoomSync-package.txt
+          (cd dist && sha256sum RoomSync.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roomsync-android
+          path: dist/*
+          if-no-files-found: error

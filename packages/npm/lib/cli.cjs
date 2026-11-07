@@ -4,6 +4,14 @@ const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const { verifyPackage } = require('./verify.cjs');
 const ROOT = path.resolve(__dirname, '..');
+const RELEASE_URL = 'https://github.com/Nyaughh/roomsync/releases/latest';
+const APK_URL = `${RELEASE_URL}/download/RoomSync.apk`;
+
+function apkInfo() {
+  return `Latest Android APK: ${APK_URL}\n` +
+    `Release notes: ${RELEASE_URL}\n` +
+    'If GitHub asks, sign in with an account that can access Nyaughh/roomsync.\n';
+}
 
 function parseArgs(args) {
   const [command, ...rest] = args;
@@ -12,6 +20,7 @@ function parseArgs(args) {
     return { kind: 'help' };
   }
   if (['--version', '-v'].includes(command) && rest.length === 0) return { kind: 'version' };
+  if (command === 'apk' && rest.length === 0) return { kind: 'apk' };
   if (command === 'doctor' && rest.length === 0) return { kind: 'doctor' };
   if (command === 'devices' && rest.length === 0) return { kind: 'native', args: ['list-devices'] };
   if (command === 'start') {
@@ -28,8 +37,10 @@ function help(version) {
     '  roomsync start               Open the local setup/control page\n' +
     '  roomsync start --no-browser  Print its address without opening a browser\n' +
     '  roomsync devices             List Windows output endpoints\n' +
+    '  roomsync apk                 Show the latest Android APK download link\n' +
     '  roomsync doctor              Check platform and bundled-host integrity\n' +
     '  roomsync --version\n\n' +
+    apkInfo() + '\n' +
     'Requires Windows 10 1703+ x64 and Node.js 20+. macOS, Linux, WSL and native\n' +
     'Windows ARM64 are not supported by this package. Run from Windows PowerShell\n' +
     'or Command Prompt, not WSL. Keep the terminal open; Ctrl+C stops the host.\n\n' +
@@ -94,6 +105,7 @@ async function run(args, options = {}) {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (parsed.kind === 'help') { stdout.write(help(pkg.version)); return 0; }
   if (parsed.kind === 'version') { stdout.write(`${pkg.version}\n`); return 0; }
+  if (parsed.kind === 'apk') { stdout.write(apkInfo()); return 0; }
   const supported = platform === 'win32' && arch === 'x64';
   if (!supported && parsed.kind !== 'doctor') {
     stderr.write(`RoomSync's bundled host requires Windows x64 (detected ${platform}/${arch}). Use Windows PowerShell or Command Prompt with x64 Node.js, not WSL. No host was started.\n`);
@@ -106,6 +118,7 @@ async function run(args, options = {}) {
     stdout.write(`RoomSync ${pkg.version}\nPlatform: ${platform}/${arch} (${supported ? 'supported' : 'unsupported'})\nBundled Windows x64 host: checksum verified\nBundle manifest version: ${verified.manifest.version}\nSource commit: ${verified.manifest.sourceCommit}\nAudio hardware/runtime validation: not performed by this check\n`);
     return supported ? 0 : 1;
   }
+  if (['web', 'web-headless'].includes(parsed.args[0])) stdout.write(apkInfo() + '\n');
   return runNative(verified.executable, parsed.args, { spawnImpl, processImpl, platform, stderr });
 }
 module.exports = { parseArgs, help, run, runNative };

@@ -7,6 +7,17 @@ and never a zero-latency promise. Video/call-specific behavior is deferred.
 
 ## Try the prototype
 
+Download the [latest Android APK](https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk)
+from [GitHub Releases](https://github.com/Nyaughh/roomsync/releases/latest).
+The repository is private; sign in with an account that has access.
+On Windows x64 with Node.js 20+, run `npx roomsync@latest start`.
+Use `npx roomsync@latest apk` to print the APK link separately.
+
+**0.1.7** adds the CLI download link and a repeatable signed Android build.
+Its Android APK uses a new retained signing identity: uninstall older previews
+once before installing 0.1.7. Subsequent builds will reuse the retained key.
+Audio transport, buffering and scheduling are unchanged from 0.1.6.
+
 Windows and Android **0.1.6** add bounded timing diagnostics for investigating
 cutouts. This is not a demonstrated playback fix: packet format, buffering policy
 and audio scheduling remain unchanged. Windows 0.1.5 and Android 0.1.4 remain
@@ -108,14 +119,14 @@ This private project has no open-source license selected. Third-party dependency
 licenses remain their respective owners' terms. Keep key/signing files and build
 outputs out of version control.
 
-## npm launcher preview
+## npm launcher
 
 A dependency-free Windows x64 launcher is in [packages/npm](packages/npm/README.md).
-A verified local tarball supports `npx --package ./roomsync-0.1.6.tgz roomsync start`
-or a local global install followed by `roomsync start`. It opens the existing
+A verified local tarball supports `npx --package ./roomsync-0.1.7.tgz roomsync start`
+or a global npm install followed by `roomsync start`. It opens the existing
 localhost setup page; it does not begin sharing audio automatically.
 
-**Not published to npm.** Plain `npx roomsync start` is the intended future command,
-not an available verified release yet. The package remains private/unlicensed until
-its owner explicitly chooses publication, name, access and licensing. No install
-hooks, runtime downloads or npm credentials were added.
+The launcher is published as [roomsync](https://www.npmjs.com/package/roomsync).
+Run `npx roomsync@latest start`; both startup and help show the latest APK link.
+`npx roomsync@latest apk` prints the link without starting the Windows host.
+The package remains UNLICENSED. No install hooks or runtime downloads were added.

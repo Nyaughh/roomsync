@@ -59,7 +59,9 @@ if [[ ! -f "$KEY" ]]; then
     keytool -genkeypair -keystore "$KEY" -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 3650 -dname 'CN=RoomSync Debug,O=RoomSync,C=US' >/dev/null
     chmod 600 "$KEY"
 fi
-"$BT/apksigner" sign --ks "$KEY" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$BUILD/RoomSync-debug.apk" "$BUILD/aligned.apk"
+export ROOMSYNC_KEYSTORE_PASSWORD="${ROOMSYNC_KEYSTORE_PASSWORD:-android}"
+export ROOMSYNC_KEY_PASSWORD="${ROOMSYNC_KEY_PASSWORD:-$ROOMSYNC_KEYSTORE_PASSWORD}"
+"$BT/apksigner" sign --ks "$KEY" --ks-key-alias "${ROOMSYNC_KEY_ALIAS:-androiddebugkey}" --ks-pass env:ROOMSYNC_KEYSTORE_PASSWORD --key-pass env:ROOMSYNC_KEY_PASSWORD --out "$BUILD/RoomSync-debug.apk" "$BUILD/aligned.apk"
 "$BT/apksigner" verify --verbose "$BUILD/RoomSync-debug.apk"
 "$BT/zipalign" -c -P 16 4 "$BUILD/RoomSync-debug.apk"
 sha256sum "$BUILD/RoomSync-debug.apk"

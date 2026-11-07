@@ -29,10 +29,10 @@ Android system libraries are platform dependencies, not bundled copies.
 
 Locked input fingerprints
 -------------------------
-apps/desktop/Cargo.lock: SHA-256 17b6fbdc022d74ff05dd7e531a4dc70d0207bb16b17a277bda2842841470ed25
+apps/desktop/Cargo.lock: SHA-256 7fb078a14c17ca89feab95b22e13f56d13c398490029e03dff7f0d6ecdff0c23
 apps/android/native/Cargo.lock: SHA-256 25629f7f27be409d82be13c10f4e1ea0d0729134ae05d8909175b55353a58c84
 
-Desktop fingerprint refreshed for first-party RoomSync version 0.1.6.
+Desktop fingerprint refreshed for first-party RoomSync version 0.1.7.
 The registry dependency versions and upstream notice texts are unchanged.
 
 Registry dependency inventory

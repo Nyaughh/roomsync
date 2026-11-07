@@ -1,14 +1,18 @@
-# RoomSync Android receiver 0.1.6
+# RoomSync Android receiver 0.1.7
 
 A minimal Android 8.0+ receiver using the shared Rust audio/timing core and
 Noise-PSK encrypted UDP. The APK supports **arm64-v8a** and **x86_64**.
 32-bit-only ARM phones are not supported by this preview.
 
-**Installing this update:** 0.1.6 uses the same signing certificate as the
-previously distributed 0.1.4 preview, so it can install over that version without
-uninstalling. The package is versionCode 6. Pre-0.1.4 previews used a different,
-unavailable signing key: those must be uninstalled first, removing their app
-data, before installing this APK. Nothing is uninstalled automatically.
+Download [RoomSync.apk](https://github.com/Nyaughh/roomsync/releases/latest/download/RoomSync.apk)
+from [the latest GitHub release](https://github.com/Nyaughh/roomsync/releases/latest).
+The repository is private, so GitHub may require sign-in with repository access.
+
+**Installing 0.1.7:** this release uses a new retained signing certificate because
+the earlier APK and key could not be recovered. Uninstall older RoomSync previews
+once before installing 0.1.7; uninstalling removes their app data. Nothing is
+uninstalled automatically. Future releases reuse the retained key for in-place
+updates. This APK is versionCode 7. Audio behavior is unchanged from 0.1.6.
 
 This is a diagnostic update, not a verified cure for audio cutouts. It adds
 bounded receive/processing timing counters without changing Android's playback
@@ -147,7 +151,10 @@ ROOMSYNC_LIVE_TIMING=1 ./apps/android/test.sh # Optional real-time cloud/JNI smo
 ./apps/android/build.sh
 ```
 
-Overrides: `ANDROID_NDK_HOME`, `ANDROID_BUILD_TOOLS`, `ROOMSYNC_DEBUG_KEYSTORE`.
+Overrides: `ANDROID_NDK_HOME`, `ANDROID_BUILD_TOOLS`, `ROOMSYNC_DEBUG_KEYSTORE`,
+`ROOMSYNC_KEY_ALIAS`, `ROOMSYNC_KEYSTORE_PASSWORD`, `ROOMSYNC_KEY_PASSWORD`.
+Passwords are passed to apksigner by environment, not command-line values.
+See [release instructions](../../docs/RELEASING.md) for the retained CI signing key.
 Set `ROOMSYNC_DEBUG_KEYSTORE` to the securely backed-up key for your existing
 installation. A missing key now stops the build rather than silently replacing
 the signing identity. `ROOMSYNC_UNSIGNED_ONLY=1` verifies compilation and packages
