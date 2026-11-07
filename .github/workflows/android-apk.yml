@@ -29,6 +29,7 @@ jobs:
           trap 'rm -f "$ROOMSYNC_DEBUG_KEYSTORE"' EXIT
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ROOMSYNC_DEBUG_KEYSTORE"
           chmod 600 "$ROOMSYNC_DEBUG_KEYSTORE"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           bash apps/android/build.sh
           mkdir -p dist
           cp apps/android/build/RoomSync-debug.apk dist/RoomSync.apk
